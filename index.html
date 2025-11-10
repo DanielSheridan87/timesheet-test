@@ -6,734 +6,729 @@
     <title>Staff Timesheet System</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
     <style>
-        /* Custom styles for aesthetic appeal and responsiveness */
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f7fafc;
-            min-height: 100vh;
+        /* Custom styles for time inputs */
+        input[type="time"]::-webkit-calendar-picker-indicator {
+            cursor: pointer;
+            filter: invert(40%) sepia(93%) saturate(2000%) hue-rotate(190deg) brightness(80%) contrast(100%);
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 1rem;
+        .clickable-row {
+            cursor: pointer;
+            transition: background-color 0.1s;
         }
-        .card {
-            background-color: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-        }
-        .table-container {
-            overflow-x: auto;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-        }
-        th, td {
-            white-space: nowrap;
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        thead th {
-            background-color: #edf2f7;
-            text-align: left;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            color: #4a5568;
-        }
-        /* Style for required input fields */
-        input:required:invalid:not(:focus):not(:placeholder-shown) {
-            border-color: #f56565;
-            box-shadow: 0 0 0 1px #f56565;
-        }
-        /* Style for the Submission Lock */
-        .submitted-lock {
-            background-color: #f0fdf4;
-            color: #059669;
-            pointer-events: none;
-        }
-        /* Button for deletion confirmation */
-        #confirmationModal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
-        }
-        .modal-content {
-            background-color: white;
-            margin: 15% auto;
-            padding: 20px;
-            border-radius: 8px;
-            width: 90%;
-            max-width: 400px;
+        .clickable-row:hover {
+            background-color: #f3f4f6;
         }
     </style>
 </head>
-<body class="bg-gray-50">
-    <div id="app" class="container py-8">
-        <!-- Content will be rendered here -->
+<body class="bg-gray-50 flex items-start justify-center min-h-screen p-4 sm:p-8 font-sans">
+
+    <div id="app-container" class="w-full max-w-4xl pt-8">
+        
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-blue-700">Staff Time Sheet System</h1>
+            <p id="sub-header" class="text-gray-500 mt-2">Log in to track your weekly hours.</p>
+        </header>
+
+        <!-- Main Content Area (Login or Timesheet) -->
+        <main id="content-area"></main>
     </div>
 
-    <!-- Confirmation Modal Structure (Used for employee deletion) -->
-    <div id="confirmationModal" class="flex items-center justify-center">
-        <div class="modal-content card">
-            <h3 class="text-lg font-semibold mb-4 text-gray-900">Confirm Deletion</h3>
-            <p id="confirmMessage" class="text-gray-700 mb-6">Are you sure you want to delete this employee?</p>
-            <div class="flex justify-end space-x-3">
-                <button id="cancelDelete" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Cancel</button>
-                <button id="confirmDelete" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Delete</button>
-            </div>
-        </div>
-    </div>
-    
     <script>
-        // --- GLOBAL STATE ---
-        let currentUserId = null;
-        let isAppReady = false;
-        let currentRole = 'guest'; // 'guest', 'staff', 'admin'
-        let currentEmployee = null;
-        let timesheetData = {};
-
-        // --- CONSTANTS ---
-        const ADMIN_ID = 'A9999';
-        const APP_STORAGE_KEY = 'staffTimesheetData';
+        // --- DATA SIMULATION: Using localStorage for stable data persistence ---
         
-        // Helper to get the start of the current work week (Monday 00:00:00)
-        const getWeekStartDate = () => {
-            const now = new Date();
-            const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-            const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust to Monday
-            const monday = new Date(now.getFullYear(), now.getMonth(), diff);
+        const localStorageKey = (employeeId, weekStart) => `timesheet_${employeeId}_${weekStart}`;
+        const employeeDataKey = 'employee_contracts';
+
+        // Helper function to extract the last name from the full name
+        function extractSurname(fullName) {
+            if (!fullName) return '';
+            const parts = fullName.split(' ');
+            return parts[parts.length - 1].toUpperCase();
+        }
+
+        // Initial setup for demo employees in localStorage (Admin data)
+        function getEmployeeContracts() {
+            const data = localStorage.getItem(employeeDataKey);
+            const contracts = data ? JSON.parse(data) : {
+                // NOTE: Surname is derived from the name property for login validation
+                'A9999': { name: 'Administrator', contractHours: 0.0 },
+                'E1001': { name: 'Debbie Abbott', contractHours: 12.5 },
+                'E1002': { name: 'Lorna Keeping', contractHours: 20.0 },
+                'E1003': { name: 'Joy Davies', contractHours: 0.0 }
+            };
+            
+            // Add derived surname for easy lookup
+            for (const id in contracts) {
+                contracts[id].surname = extractSurname(contracts[id].name);
+            }
+            return contracts;
+        }
+
+        function saveEmployeeContracts(contracts) {
+            localStorage.setItem(employeeDataKey, JSON.stringify(contracts));
+        }
+
+        // Initialize demo data if not present
+        if (!localStorage.getItem(employeeDataKey)) {
+            saveEmployeeContracts(getEmployeeContracts());
+        }
+
+        let currentEmployee = null; // Holds the logged-in employee data
+        let currentWeekStart = null; // Date object for the Monday start of the current week
+        
+        // --- CORE APPLICATION LOGIC ---
+
+        function getWeekStart(date) {
+            const d = new Date(date);
+            const day = d.getDay();
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust day to Monday (1)
+            const monday = new Date(d.setDate(diff));
+            
+            // Set time to 00:00:00 to represent the very start of Monday
             monday.setHours(0, 0, 0, 0);
-            return monday.toISOString().substring(0, 10); // YYYY-MM-DD
-        };
+            return monday;
+        }
 
-        const currentWeekId = getWeekStartDate();
-        const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-        // --- LOCAL STORAGE FUNCTIONS (Replaces Firebase) ---
-        const loadLocalData = () => {
-            const data = localStorage.getItem(APP_STORAGE_KEY);
-            return data ? JSON.parse(data) : { roster: getDefaultRoster(), timesheets: {} };
-        };
-
-        const saveLocalData = (data) => {
-            localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(data));
-        };
-
-        const getDefaultRoster = () => {
-            // Default users are created if local storage is empty
-            const roster = {};
-            roster[ADMIN_ID] = { id: ADMIN_ID, fullName: 'System Administrator', contractHours: 0, isAdmin: true };
-            roster['E1001'] = { id: 'E1001', fullName: 'Debbie Abbott', contractHours: 12.5, isAdmin: false };
-            roster['E1002'] = { id: 'E1002', fullName: 'Bob Smith', contractHours: 20.0, isAdmin: false };
-            roster['E1003'] = { id: 'E1003', fullName: 'Charlie Brown', contractHours: 0, isAdmin: false };
-            return roster;
-        };
-
-        // --- TIME CALCULATION LOGIC ---
-
-        const calculateTotalHours = (entries) => {
-            let totalMinutes = 0;
-            const parseTime = (time) => {
-                if (!time) return 0;
-                const [h, m] = time.split(':').map(Number);
-                return h * 60 + m;
-            };
-
-            for (const day of DAYS_OF_WEEK) {
-                const dayEntries = entries[day] || {};
-                
-                // AM Hours
-                const amStart = parseTime(dayEntries.amStart);
-                const amEnd = parseTime(dayEntries.amEnd);
-                if (amEnd > amStart) totalMinutes += (amEnd - amStart);
-
-                // PM Hours
-                const pmStart = parseTime(dayEntries.pmStart);
-                const pmEnd = parseTime(dayEntries.pmEnd);
-                if (pmEnd > pmStart) totalMinutes += (pmEnd - pmStart);
-            }
-            return totalMinutes / 60; // Return total hours
-        };
-
-        const calculatePaidHours = (submittedHours, contractHours) => {
-            return Math.max(submittedHours, contractHours);
-        };
-
-        // --- STATE MANAGEMENT ---
-
-        const initializeApp = () => {
-            // Load all data from local storage
-            const data = loadLocalData();
-            
-            // Check if timesheet data exists for the current user and week
-            if (currentUserId && data.timesheets[currentWeekId] && data.timesheets[currentWeekId][currentUserId]) {
-                timesheetData = data.timesheets[currentWeekId][currentUserId];
-            } else {
-                timesheetData = { entries: {} };
-            }
-
-            // Bind modal buttons
-            document.getElementById('cancelDelete').onclick = () => document.getElementById('confirmationModal').style.display = 'none';
-            
-            isAppReady = true;
-            renderApp();
-        };
-
-        const handleLogin = (e) => {
-            e.preventDefault();
-            const staffId = document.getElementById('staffId').value.trim().toUpperCase();
-            const lastName = document.getElementById('lastName').value.trim().toUpperCase();
-            
-            const data = loadLocalData();
-            const user = data.roster[staffId];
-            
-            if (!user) {
-                alert('Login failed: Staff Number not found in system.');
-                return;
-            }
-
-            const fullNameParts = user.fullName.toUpperCase().split(' ');
-            const userLastName = fullNameParts[fullNameParts.length - 1];
-
-            if (userLastName !== lastName) {
-                alert('Login failed: Staff Number and Last Name combination is incorrect.');
-                return;
-            }
-            
-            currentUserId = staffId;
-            currentRole = user.isAdmin ? 'admin' : 'staff';
-            currentEmployee = user;
-
-            // Initialize app state for the logged-in user
-            initializeApp();
-        };
-
-        const handleLogout = () => {
-            currentUserId = null;
-            currentRole = 'guest';
-            currentEmployee = null;
-            timesheetData = {};
-            renderApp();
-        };
-
-        const handleTimesheetChange = (day, period, type, value) => {
-            const data = loadLocalData();
-            
-            // Ensure data structure exists for the current week and user
-            if (!data.timesheets[currentWeekId]) {
-                data.timesheets[currentWeekId] = {};
-            }
-            if (!data.timesheets[currentWeekId][currentUserId]) {
-                data.timesheets[currentWeekId][currentUserId] = { entries: {} };
-            }
-            
-            const userWeekData = data.timesheets[currentWeekId][currentUserId];
-
-            if (!userWeekData.entries[day]) {
-                userWeekData.entries[day] = {};
-            }
-
-            // Update the specific time entry
-            userWeekData.entries[day][`${period}${type}`] = value;
-            
-            // Recalculate totals for display
-            const submittedHours = calculateTotalHours(userWeekData.entries);
-            const contractHours = currentEmployee.contractHours;
-            const paidHours = calculatePaidHours(submittedHours, contractHours);
-
-            userWeekData.submittedHours = submittedHours;
-            userWeekData.paidHours = paidHours;
-            
-            // Save back to local storage
-            saveLocalData(data);
-            
-            // Re-render only the timesheet view to update totals
-            renderTimesheetView();
-        };
-
-        const handleSubmitHours = () => {
-            if (!currentUserId) return;
-            
-            const data = loadLocalData();
-            const userWeekData = data.timesheets[currentWeekId][currentUserId];
-
-            if (userWeekData && userWeekData.submitted) {
-                alert('Hours already submitted for this week. Use "Recall Submission" to unlock.');
-                return;
-            }
-
-            // Compile report for email simulation
-            const employee = currentEmployee;
-            const submittedHours = userWeekData.submittedHours || 0;
-            const paidHours = userWeekData.paidHours || employee.contractHours || 0;
-            const entries = userWeekData.entries;
-
-            let reportBody = `Timesheet Submission for ${employee.fullName} (${currentUserId})\n`;
-            reportBody += `Week Starting: ${currentWeekId}\n`;
-            reportBody += `Total Submitted Hours: ${submittedHours.toFixed(2)} hrs\n`;
-            reportBody += `Total Paid Hours (Contract ${employee.contractHours} hrs): ${paidHours.toFixed(2)} hrs\n\n`;
-            reportBody += "--- Detailed Entries ---\n";
-
-            DAYS_OF_WEEK.forEach(day => {
-                const dayEntries = entries[day] || {};
-                const amStart = dayEntries.amStart || '';
-                const amEnd = dayEntries.amEnd || '';
-                const pmStart = dayEntries.pmStart || '';
-                const pmEnd = dayEntries.pmEnd || '';
-                
-                reportBody += `${day}:\n`;
-                if (amStart || amEnd) reportBody += `  AM: ${amStart || '--'} to ${amEnd || '--'}\n`;
-                if (pmStart || pmEnd) reportBody += `  PM: ${pmStart || '--'} to ${pmEnd || '--'}\n`;
-            });
-
-            // Set submitted flag
-            userWeekData.submitted = true;
-            userWeekData.submissionDate = new Date().toISOString();
-            
-            saveLocalData(data); // Save submission status
-            renderTimesheetView(); // Lock the UI
-
-            // Simulate email dispatch using mailto
-            const subject = `TIMESHEET SUBMISSION: ${employee.fullName} - Week of ${currentWeekId}`;
-            const adminEmail = 'timesheet_admin@yourcompany.com';
-            
-            // Use a temporary link element to trigger mailto without navigating the main window
-            const mailtoLink = document.createElement('a');
-            mailtoLink.href = `mailto:${adminEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(reportBody)}`;
-            mailtoLink.target = '_blank';
-            mailtoLink.style.display = 'none';
-            document.body.appendChild(mailtoLink);
-            mailtoLink.click();
-            document.body.removeChild(mailtoLink);
-        };
-
-        const handleRecallSubmission = () => {
-            const data = loadLocalData();
-            const userWeekData = data.timesheets[currentWeekId][currentUserId];
-
-            if (userWeekData && userWeekData.submitted) {
-                userWeekData.submitted = false;
-                userWeekData.submissionDate = null;
-                saveLocalData(data);
-                renderTimesheetView();
-            }
-        };
-
-        // --- ADMIN FUNCTIONS ---
-
-        const handleSaveEmployee = (e) => {
-            e.preventDefault();
-            const form = e.target;
-            const id = document.getElementById('admin-id').value.trim().toUpperCase();
-            const fullName = document.getElementById('admin-fullName').value.trim();
-            const contractHours = parseFloat(document.getElementById('admin-contractHours').value);
-            
-            if (id === ADMIN_ID) {
-                alert("Cannot modify or delete the main System Administrator record.");
-                return;
-            }
-
-            const data = loadLocalData();
-            
-            // Check if last name is provided
-            const fullNameParts = fullName.trim().split(/\s+/);
-            if (fullNameParts.length < 2) {
-                alert("Please enter a full name (First and Last name required for login verification).");
-                return;
-            }
-
-            data.roster[id] = {
-                id: id,
-                fullName: fullName,
-                contractHours: isNaN(contractHours) ? 0 : contractHours,
-                isAdmin: false // Only the master ADMIN_ID can be true
-            };
-
-            saveLocalData(data);
-            form.reset();
-            renderAdminView(); // Re-render to show updated list
-        };
+        function formatWeekStart(date) {
+            return date.toISOString().split('T')[0]; // YYYY-MM-DD for storage
+        }
         
-        // This function is called from the HTML's onclick handler
-        window.startEditEmployee = (employeeData) => {
-            // Data passed via onclick is URL encoded, so we must decode and parse it
-            try {
-                const user = JSON.parse(decodeURIComponent(employeeData));
+        function calculateTimeDifference(start, end) {
+            if (!start || !end) return 0;
+            
+            const [startHour, startMin] = start.split(':').map(Number);
+            const [endHour, endMin] = end.split(':').map(Number);
+            
+            // Convert to minutes
+            const startTimeMinutes = startHour * 60 + startMin;
+            const endTimeMinutes = endHour * 60 + endMin;
+            
+            if (endTimeMinutes <= startTimeMinutes) return 0; // Invalid entry
+            
+            const diffMinutes = endTimeMinutes - startTimeMinutes;
+            return diffMinutes / 60; // Convert to hours
+        }
+
+        function calculateTotals(timesheetData, contractHours) {
+            let totalSubmittedHours = 0;
+            
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            
+            // Create a temporary data structure if timesheetData is null/empty for a new week
+            const currentTimesheet = timesheetData || days.reduce((acc, day) => {
+                acc[day] = { amStart: '', amEnd: '', pmStart: '', pmEnd: '', dailyTotal: '0.00' };
+                return acc;
+            }, {});
+
+            for (const day of days) {
+                const dayEntry = currentTimesheet[day] || {};
                 
-                document.getElementById('admin-id').value = user.id;
-                document.getElementById('admin-fullName').value = user.fullName;
-                document.getElementById('admin-contractHours').value = user.contractHours;
+                const amHours = calculateTimeDifference(dayEntry.amStart, dayEntry.amEnd);
+                const pmHours = calculateTimeDifference(dayEntry.pmStart, dayEntry.pmEnd);
                 
-                // Disable ID field when editing existing user (except Admin)
-                document.getElementById('admin-id').disabled = true;
-                document.getElementById('saveEmployeeBtn').textContent = 'Update Employee';
-            } catch (error) {
-                alert("Error processing employee data for edit.");
-                console.error("Error decoding employee data:", error);
+                currentTimesheet[day].dailyTotal = (amHours + pmHours).toFixed(2);
+                totalSubmittedHours += amHours + pmHours;
             }
-        };
-
-        const handleDeleteEmployee = (id, fullName) => {
-            if (id === ADMIN_ID) {
-                alert("Cannot modify or delete the main System Administrator record.");
-                return;
-            }
-
-            // Set up confirmation modal
-            document.getElementById('confirmMessage').textContent = `Are you sure you want to delete ${fullName} (${id})? This action is permanent.`;
-            document.getElementById('confirmationModal').style.display = 'flex';
-
-            document.getElementById('confirmDelete').onclick = () => {
-                const data = loadLocalData();
-                delete data.roster[id];
-                
-                // Also remove their timesheet data (optional but cleaner)
-                Object.keys(data.timesheets).forEach(weekId => {
-                    if (data.timesheets[weekId][id]) {
-                        delete data.timesheets[weekId][id];
-                    }
-                });
-
-                saveLocalData(data);
-                document.getElementById('confirmationModal').style.display = 'none';
-                renderAdminView(); // Re-render to show updated list
+            
+            const totalSubmitted = parseFloat(totalSubmittedHours.toFixed(2));
+            const totalPaid = Math.max(totalSubmitted, contractHours);
+            
+            return { 
+                timesheet: currentTimesheet, 
+                totalSubmitted, 
+                totalPaid 
             };
-        };
+        }
         
-        // --- RENDERING VIEWS ---
+        function loadTimesheet(employeeId) {
+            const today = new Date();
+            currentWeekStart = getWeekStart(today);
+            const weekStartString = formatWeekStart(currentWeekStart);
 
-        const renderApp = () => {
-            const appDiv = document.getElementById('app');
-            appDiv.innerHTML = ''; // Clear content
+            const storedDataRaw = localStorage.getItem(localStorageKey(employeeId, weekStartString));
             
-            if (!isAppReady) {
-                appDiv.innerHTML = `<div class="text-center p-8 text-lg font-semibold text-blue-600">Loading System...</div>`;
-                return;
-            }
-
-            if (currentRole === 'guest') {
-                appDiv.innerHTML = renderLoginView();
-                document.getElementById('loginForm').onsubmit = handleLogin;
-            } else if (currentRole === 'staff') {
-                appDiv.innerHTML = renderTimesheetView();
-                document.getElementById('logoutBtn').onclick = handleLogout;
-                
-                const submitBtn = document.getElementById('submitHoursBtn');
-                if (submitBtn) submitBtn.onclick = handleSubmitHours;
-
-                const recallBtn = document.getElementById('recallSubmissionBtn');
-                if (recallBtn) recallBtn.onclick = handleRecallSubmission;
-                
-                // Attach event listeners for timesheet changes
-                const inputs = appDiv.querySelectorAll('.time-input');
-                inputs.forEach(input => {
-                    const [day, period, type] = input.dataset.field.split('-');
-                    input.onchange = (e) => handleTimesheetChange(day, period, type, e.target.value);
-                });
-
-            } else if (currentRole === 'admin') {
-                appDiv.innerHTML = renderAdminView();
-                document.getElementById('logoutBtn').onclick = handleLogout;
-                document.getElementById('employeeForm').onsubmit = handleSaveEmployee;
-                document.getElementById('resetEditForm').onclick = () => {
-                    document.getElementById('employeeForm').reset();
-                    document.getElementById('admin-id').disabled = false;
-                    document.getElementById('saveEmployeeBtn').textContent = 'Add Employee';
-                };
-
-                // Attach event listeners for detail view clicks
-                const detailTriggers = appDiv.querySelectorAll('.detail-trigger');
-                detailTriggers.forEach(trigger => {
-                    trigger.onclick = (e) => {
-                        e.preventDefault();
-                        const targetId = trigger.dataset.employeeId;
-                        renderDetailedTimesheet(targetId);
-                    };
-                });
-            }
-        };
-
-        const renderLoginView = () => {
-            return `
-                <div class="flex items-center justify-center min-h-screen">
-                    <div class="card w-full max-w-md text-center">
-                        <h1 class="text-3xl font-bold text-gray-800 mb-6">Staff Timesheet Login</h1>
-                        <form id="loginForm" class="space-y-4">
-                            <div>
-                                <label for="staffId" class="block text-sm font-medium text-gray-700 text-left mb-1">Staff Number (or Employee ID)</label>
-                                <input type="text" id="staffId" required placeholder="S12345" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 uppercase">
-                            </div>
-                            <div>
-                                <label for="lastName" class="block text-sm font-medium text-gray-700 text-left mb-1">Last Name (for verification)</label>
-                                <input type="text" id="lastName" required placeholder="Smith" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 uppercase">
-                            </div>
-                            <button type="submit" id="loginBtn" class="w-full py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-150">
-                                Access Timesheet
-                            </button>
-                        </form>
-                    </div>
-                </div>
-            `;
-        };
-
-        const renderTimesheetView = () => {
-            const data = loadLocalData();
-            const userWeekData = data.timesheets[currentWeekId] ? data.timesheets[currentWeekId][currentUserId] || { entries: {} } : { entries: {} };
-            const entries = userWeekData.entries || {};
-            const submitted = userWeekData.submitted || false;
-            const submittedHours = userWeekData.submittedHours || 0;
-            const paidHours = userWeekData.paidHours || currentEmployee.contractHours || 0;
-            const contractHours = currentEmployee.contractHours;
+            let timesheetData = storedDataRaw ? JSON.parse(storedDataRaw) : null;
             
-            const lockClass = submitted ? 'submitted-lock' : '';
+            // Get contract hours
+            const contracts = getEmployeeContracts();
+            const contractHours = contracts[employeeId]?.contractHours || 0;
+            
+            // Calculate and get the structured data back
+            const calculationResult = calculateTotals(timesheetData, contractHours);
+            
+            return { 
+                employeeId, 
+                weekStartString, 
+                timesheet: calculationResult.timesheet,
+                totalSubmitted: calculationResult.totalSubmitted,
+                totalPaid: calculationResult.totalPaid,
+                isSubmitted: timesheetData ? (timesheetData.isSubmitted || false) : false
+            };
+        }
+        
+        function saveTimesheet(data) {
+            const weekStartString = formatWeekStart(currentWeekStart);
+            localStorage.setItem(localStorageKey(data.employeeId, weekStartString), JSON.stringify({
+                isSubmitted: data.isSubmitted,
+                ...data.timesheet
+            }));
+            // Only re-render staff view, admin view needs explicit refresh/update
+            if (currentEmployee.employeeId !== 'A9999') {
+                renderTimesheetView(data);
+            }
+        }
 
-            let tableRows = '';
-            DAYS_OF_WEEK.forEach(day => {
-                const dayEntries = entries[day] || {};
+        // Function to get all timesheet summaries for the current week
+        function getAllTimesheetSummaries() {
+            const today = new Date();
+            const currentWeekStart = getWeekStart(today);
+            const weekStartString = formatWeekStart(currentWeekStart);
+            const contracts = getEmployeeContracts();
+            const summaries = [];
+            
+            // Iterate over all employees (excluding the Admin itself)
+            for (const employeeId in contracts) {
+                if (employeeId === 'A9999') continue;
                 
-                tableRows += `
-                    <tr>
-                        <td class="font-semibold">${day}</td>
-                        <td class="p-0">
-                            <input type="time" class="time-input w-full p-2 border-none bg-transparent ${lockClass}" data-field="${day}-am-Start" value="${dayEntries.amStart || ''}" ${submitted ? 'disabled' : ''}>
-                        </td>
-                        <td class="p-0">
-                            <input type="time" class="time-input w-full p-2 border-none bg-transparent ${lockClass}" data-field="${day}-am-End" value="${dayEntries.amEnd || ''}" ${submitted ? 'disabled' : ''}>
-                        </td>
-                        <td class="p-0">
-                            <input type="time" class="time-input w-full p-2 border-none bg-transparent ${lockClass}" data-field="${day}-pm-Start" value="${dayEntries.pmStart || ''}" ${submitted ? 'disabled' : ''}>
-                        </td>
-                        <td class="p-0">
-                            <input type="time" class="time-input w-full p-2 border-none bg-transparent ${lockClass}" data-field="${day}-pm-End" value="${dayEntries.pmEnd || ''}" ${submitted ? 'disabled' : ''}>
-                        </td>
-                    </tr>
-                `;
-            });
+                const employee = contracts[employeeId];
+                const contractHours = employee.contractHours;
+                
+                const storedDataRaw = localStorage.getItem(localStorageKey(employeeId, weekStartString));
+                let timesheetData = storedDataRaw ? JSON.parse(storedDataRaw) : null;
 
-            return `
-                <div class="flex justify-between items-center mb-6">
-                    <h1 class="text-3xl font-extrabold text-gray-900">Timesheet: ${currentEmployee.fullName}</h1>
-                    <button id="logoutBtn" class="px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition duration-150">Logout</button>
-                </div>
+                const { totalSubmitted, totalPaid } = calculateTotals(timesheetData, contractHours);
+                const isSubmitted = timesheetData ? (timesheetData.isSubmitted || false) : false;
 
-                <div class="card grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                    <div>
-                        <p class="text-sm font-medium text-gray-500">Contract Hours</p>
-                        <p class="text-2xl font-bold text-blue-600">${contractHours.toFixed(2)} hrs</p>
-                    </div>
-                    <div>
-                        <p class="text-sm font-medium text-gray-500">Total Submitted This Week</p>
-                        <p class="text-2xl font-bold text-gray-800">${submittedHours.toFixed(2)} hrs</p>
-                    </div>
-                    <div>
-                        <p class="text-sm font-medium text-gray-500">Total Paid Hours</p>
-                        <p class="text-2xl font-bold text-green-600">${paidHours.toFixed(2)} hrs</p>
-                    </div>
-                </div>
+                summaries.push({
+                    employeeId,
+                    name: employee.name,
+                    contractHours,
+                    totalSubmitted: totalSubmitted,
+                    totalPaid: totalPaid,
+                    isSubmitted: isSubmitted
+                });
+            }
+            return summaries;
+        }
 
-                <h2 class="text-xl font-semibold text-gray-800 mb-4">Week Starting: ${currentWeekId} (Auto-Save Active)</h2>
+        // --- RENDER FUNCTIONS ---
+        
+        function renderLoginView() {
+            document.getElementById('sub-header').textContent = 'Please enter your Staff Number and Last Name to access your timesheet.';
+            const content = document.getElementById('content-area');
+            content.innerHTML = `
+                <div class="flex flex-col items-center">
+                    <div class="w-full max-w-md bg-white p-6 sm:p-8 rounded-xl shadow-2xl border border-gray-100">
+                        <label for="employeeId" class="block text-sm font-medium text-gray-700 mb-2">Staff Number (or Employee ID)</label>
+                        <input 
+                            type="text" 
+                            id="employeeId" 
+                            placeholder="S12345"
+                            class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-base mb-4 uppercase"
+                        >
+                        
+                        <label for="surname" class="block text-sm font-medium text-gray-700 mb-2">Last Name (for verification)</label>
+                        <input 
+                            type="text" 
+                            id="surname" 
+                            placeholder="Smith"
+                            class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-base mb-4"
+                        >
 
-                <div class="table-container card p-0">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead>
-                            <tr>
-                                <th>Day</th>
-                                <th>AM Start</th>
-                                <th>AM End</th>
-                                <th>PM Start</th>
-                                <th>PM End</th>
-                            </tr>
-                        </thead>
-                        <tbody class="bg-white divide-y divide-gray-200">
-                            ${tableRows}
-                        </tbody>
-                    </table>
-                </div>
-
-                <div class="flex justify-between items-center pt-4">
-                    ${submitted ? `
-                        <div class="flex items-center space-x-4">
-                            <span class="text-lg font-semibold text-green-600">✅ Submitted</span>
-                            <button id="recallSubmissionBtn" class="px-4 py-2 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition duration-150 shadow-md">
-                                Recall Submission
-                            </button>
-                        </div>
-                        <p class="text-sm text-gray-500">Submitted on: ${new Date(userWeekData.submissionDate).toLocaleString()}</p>
-                    ` : `
-                        <button id="submitHoursBtn" class="px-6 py-3 bg-blue-600 text-white font-extrabold rounded-lg shadow-lg hover:bg-blue-700 transition duration-150">
-                            Submit Final Hours
+                        <button 
+                            id="loginButton"
+                            class="w-full py-3 px-4 rounded-lg text-white font-semibold shadow-lg transition duration-300 ease-in-out bg-blue-500 hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-300"
+                        >
+                            Access Timesheet
                         </button>
-                    `}
+                        
+                        <p id="message-box" class="text-center mt-4 text-sm text-red-600 hidden"></p>
+                    </div>
                 </div>
             `;
-        };
-
-        const renderAdminView = () => {
-            const data = loadLocalData();
-            const roster = Object.values(data.roster).filter(u => !u.isAdmin);
-            const timesheetSummaries = data.timesheets[currentWeekId] || {};
             
-            // Generate Summary Table Rows
-            let summaryRows = '';
-            roster.forEach(user => {
-                const summary = timesheetSummaries[user.id] || {};
-                const submittedHours = summary.submittedHours || 0;
-                const paidHours = calculatePaidHours(submittedHours, user.contractHours);
-                const status = summary.submitted ? 'Submitted' : 'In Progress';
-                
-                // Encode the entire user object to safely pass it to the onclick handler
-                const encodedUserData = encodeURIComponent(JSON.stringify(user));
+            document.getElementById('loginButton').addEventListener('click', handleLogin);
+            
+            // Handle Enter key for both inputs
+            document.getElementById('employeeId').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
+            document.getElementById('surname').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') handleLogin();
+            });
+        }
+        
+        function updateMessage(text, isError = true) {
+            const messageBox = document.getElementById('message-box');
+            if (messageBox) {
+                messageBox.textContent = text;
+                messageBox.className = `text-center mt-4 text-sm ${isError ? 'text-red-600' : 'text-green-600'} visible`;
+            }
+        }
 
-                summaryRows += `
-                    <tr>
-                        <td class="font-semibold text-blue-600 cursor-pointer hover:underline detail-trigger" data-employee-id="${user.id}">
-                            ${user.id} - ${user.fullName}
+        function renderAdminView() {
+            currentWeekStart = getWeekStart(new Date());
+            document.getElementById('sub-header').textContent = `Administrator Portal - Week Starting: ${formatWeekStart(currentWeekStart)}`;
+            const content = document.getElementById('content-area');
+            const contracts = getEmployeeContracts();
+            const summaries = getAllTimesheetSummaries();
+
+            const summaryRowHtml = summaries.map(s => {
+                const statusClass = s.isSubmitted ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
+                const statusText = s.isSubmitted ? 'Submitted' : 'In Progress';
+
+                return `
+                    <tr class="border-t clickable-row" data-employee-id="${s.employeeId}">
+                        <td class="px-4 py-3 font-semibold text-gray-800 flex items-center">
+                            <span class="underline hover:text-blue-600 cursor-pointer">${s.employeeId} - ${s.name}</span>
                         </td>
-                        <td>${user.contractHours.toFixed(1)} hrs</td>
-                        <td>${submittedHours.toFixed(1)} hrs</td>
-                        <td>${paidHours.toFixed(1)} hrs</td>
-                        <td>
-                            <span class="${status === 'Submitted' ? 'text-green-600 font-bold' : 'text-yellow-600'}">${status}</span>
+                        <td class="px-4 py-3 text-center">${s.contractHours}</td>
+                        <td class="px-4 py-3 text-center text-blue-700 font-bold">${s.totalSubmitted}</td>
+                        <td class="px-4 py-3 text-center text-green-700 font-bold">${s.totalPaid}</td>
+                        <td class="px-4 py-3 text-center">
+                            <span class="text-xs font-medium px-2.5 py-0.5 rounded-full ${statusClass}">${statusText}</span>
                         </td>
                     </tr>
                 `;
-            });
-
-            // Generate Roster Management Table Rows
-            let rosterRows = '';
-            Object.values(data.roster).filter(u => !u.isAdmin).forEach(user => {
-                // Encode the entire user object to safely pass it to the onclick handler
-                const encodedUserData = encodeURIComponent(JSON.stringify(user));
-
-                rosterRows += `
-                    <tr>
-                        <td>${user.id}</td>
-                        <td>${user.fullName}</td>
-                        <td>${user.contractHours.toFixed(1)} hrs</td>
-                        <td class="flex space-x-2">
-                            <button onclick="window.startEditEmployee('${encodedUserData}')" class="px-3 py-1 text-sm bg-yellow-100 text-yellow-800 rounded-lg hover:bg-yellow-200 transition duration-150 shadow-sm">
-                                Edit
-                            </button>
-                            <button onclick="handleDeleteEmployee('${user.id}', '${user.fullName}')" class="px-3 py-1 text-sm bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition duration-150 shadow-sm">
-                                Delete
-                            </button>
-                        </td>
-                    </tr>
-                `;
-            });
-
-
-            return `
-                <div class="flex justify-between items-center mb-6">
-                    <h1 class="text-3xl font-extrabold text-gray-900">Admin Dashboard</h1>
-                    <button id="logoutBtn" class="px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition duration-150">Logout</button>
-                </div>
-
-                <!-- Weekly Timesheet Summary -->
-                <div class="card">
-                    <h2 class="text-xl font-semibold text-gray-800 mb-4">Weekly Timesheet Summary (Week of ${currentWeekId})</h2>
-                    <div class="table-container">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead>
-                                <tr>
-                                    <th>Employee</th>
-                                    <th>Contract (Hrs)</th>
-                                    <th>Total Submitted (Hrs)</th>
-                                    <th>Total Paid (Hrs)</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
-                                ${summaryRows || '<tr><td colspan="5" class="text-center py-4 text-gray-500">No staff added yet.</td></tr>'}
-                            </tbody>
-                        </table>
+            }).join('');
+            
+            const userListHtml = Object.entries(contracts).filter(([id]) => id !== 'A9999').map(([id, data]) => `
+                <li class="p-3 border-b border-gray-100 flex justify-between items-center text-sm">
+                    <span class="font-semibold text-gray-800">${id} - ${data.name}</span>
+                    <span class="text-blue-600">${data.contractHours} hrs/wk</span>
+                    <div class="flex items-center space-x-3">
+                        <button data-id="${id}" class="edit-btn text-xs text-blue-500 hover:text-blue-700 font-medium">Edit</button>
+                        <button data-id="${id}" class="delete-btn text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
                     </div>
-                </div>
-
-                <!-- Detailed Entries Container (Renders dynamically) -->
-                <div id="detailedEntries" class="hidden card">
-                    <!-- Detail view will be rendered here -->
-                </div>
+                </li>
+            `).join('');
 
 
-                <!-- Employee Management -->
-                <div class="card grid grid-cols-1 lg:grid-cols-2 gap-6">
+            content.innerHTML = `
+                <div class="flex flex-col gap-8">
                     
-                    <!-- Add/Edit Employee Form -->
-                    <div>
-                        <h2 class="text-xl font-semibold text-gray-800 mb-4">Add / Edit Employee Contract</h2>
-                        <form id="employeeForm" class="space-y-4">
-                            <div>
-                                <label for="admin-id" class="block text-sm font-medium text-gray-700">Staff Number (ID)</label>
-                                <input type="text" id="admin-id" required class="w-full px-3 py-2 border border-gray-300 rounded-lg uppercase">
-                            </div>
-                            <div>
-                                <label for="admin-fullName" class="block text-sm font-medium text-gray-700">Full Name (First and Last)</label>
-                                <input type="text" id="admin-fullName" required class="w-full px-3 py-2 border border-gray-300 rounded-lg">
-                            </div>
-                            <div>
-                                <label for="admin-contractHours" class="block text-sm font-medium text-gray-700">Contract Minimum Hours (0 for none)</label>
-                                <input type="number" step="0.5" id="admin-contractHours" required min="0" value="0" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
-                            </div>
-                            <div class="flex space-x-3">
-                                <button type="submit" id="saveEmployeeBtn" class="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 shadow-md">
-                                    Add Employee
-                                </button>
-                                <button type="button" id="resetEditForm" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">
-                                    Clear Form
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <!-- Current System Users List -->
-                    <div>
-                        <h2 class="text-xl font-semibold text-gray-800 mb-4">Current System Users</h2>
-                        <div class="table-container">
+                    <!-- Weekly Timesheet Summary Dashboard -->
+                    <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-100">
+                        <h2 class="text-2xl font-bold mb-4 text-gray-800">Weekly Timesheet Summary</h2>
+                        <div class="overflow-x-auto mb-4">
                             <table class="min-w-full divide-y divide-gray-200">
-                                <thead>
+                                <thead class="bg-gray-50">
                                     <tr>
-                                        <th>ID</th>
-                                        <th>Name</th>
-                                        <th>Contract</th>
-                                        <th>Actions</th>
+                                        <th class="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Employee (Click to View)</th>
+                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Contract (Hrs)</th>
+                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Submitted (Hrs)</th>
+                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Paid (Hrs)</th>
+                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
                                     </tr>
                                 </thead>
-                                <tbody class="bg-white divide-y divide-gray-200">
-                                    ${rosterRows || '<tr><td colspan="4" class="text-center py-4 text-gray-500">No staff documents found.</td></tr>'}
+                                <tbody id="admin-summary-body" class="divide-y divide-gray-200">
+                                    ${summaryRowHtml.length > 0 ? summaryRowHtml : `
+                                        <tr><td colspan="5" class="text-center py-6 text-gray-500">No employee data found for this week.</td></tr>
+                                    `}
                                 </tbody>
                             </table>
                         </div>
+                        
+                        <!-- DETAIL VIEW SECTION (Appears when employee name is clicked) -->
+                        <div id="admin-detail-view" class="mt-6 border-t pt-6 hidden"></div>
+                    </div>
+
+                    <!-- Management Forms -->
+                    <div class="flex flex-col lg:flex-row gap-8">
+                        <!-- User Management Form -->
+                        <div class="lg:w-1/3 bg-white p-6 rounded-xl shadow-md border border-gray-100 h-fit">
+                            <h2 class="text-xl font-bold mb-4 text-gray-800">Add / Edit Employee</h2>
+                            <input type="text" id="admin_id" placeholder="Employee ID (E1001)" class="w-full p-2 border rounded mb-3 uppercase">
+                            <input type="text" id="admin_name" placeholder="Full Name (e.g. Alice Johnson)" class="w-full p-2 border rounded mb-3">
+                            <input type="number" id="admin_hours" placeholder="Contract Hours (0.0 or 12.5)" step="0.5" class="w-full p-2 border rounded mb-4">
+                            <button id="saveAdminButton" class="w-full py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition">Add/Update Employee</button>
+                        </div>
+
+                        <!-- Current Users List -->
+                        <div class="lg:w-2/3 bg-white p-6 rounded-xl shadow-md border border-gray-100">
+                            <h2 class="text-xl font-bold mb-4 text-gray-800">Current System Users</h2>
+                            <ul id="admin-user-list" class="divide-y divide-gray-100 max-h-96 overflow-y-auto">
+                                ${userListHtml.length > 0 ? userListHtml : '<li class="p-3 text-gray-500">No employees defined yet.</li>'}
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <button id="logoutButton" class="w-full py-3 mt-4 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition max-w-xs self-center">Log Out</button>
+
+                </div>
+            `;
+            
+            // Attach event listeners for Admin View
+            document.getElementById('saveAdminButton').addEventListener('click', handleSaveEmployee);
+            document.getElementById('logoutButton').addEventListener('click', handleLogout);
+            
+            // Click handler for viewing employee details
+            document.querySelectorAll('#admin-summary-body .clickable-row').forEach(row => {
+                row.addEventListener('click', (e) => {
+                    const employeeId = row.getAttribute('data-employee-id');
+                    handleViewDetails(employeeId);
+                });
+            });
+            
+            // Edit button handler
+            document.querySelectorAll('.edit-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const id = e.target.getAttribute('data-id');
+                    const emp = contracts[id];
+                    document.getElementById('admin_id').value = id;
+                    document.getElementById('admin_name').value = emp.name;
+                    document.getElementById('admin_hours').value = emp.contractHours;
+                });
+            });
+
+            // NEW: Delete button handler
+            document.querySelectorAll('.delete-btn').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const id = e.target.getAttribute('data-id');
+                    handleDeleteEmployee(id);
+                });
+            });
+        }
+        
+        // New function to render the detailed timesheet view within the Admin Dashboard
+        function renderAdminDetailsView(employeeId, data) {
+            const detailView = document.getElementById('admin-detail-view');
+            const employee = getEmployeeContracts()[employeeId];
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            const rowHtml = days.map(day => {
+                const dayData = data.timesheet[day];
+                const dayClass = day === 'Saturday' || day === 'Sunday' ? 'bg-yellow-50' : 'bg-white';
+                
+                return `
+                    <tr class="border-t ${dayClass}">
+                        <td class="px-4 py-3 font-semibold text-gray-800">${day}</td>
+                        <td class="p-1 text-center">${dayData.amStart || '-'}</td>
+                        <td class="p-1 text-center">${dayData.amEnd || '-'}</td>
+                        <td class="p-1 text-center">${dayData.pmStart || '-'}</td>
+                        <td class="p-1 text-center">${dayData.pmEnd || '-'}</td>
+                        <td class="px-4 py-3 font-bold text-center">${dayData.dailyTotal}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            detailView.innerHTML = `
+                <h3 class="xl font-bold mb-3 text-gray-800">Detailed Entries for: ${employee.name} (${employeeId})</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg">
+                        <thead class="bg-gray-100">
+                            <tr>
+                                <th class="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Day</th>
+                                <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-600 uppercase tracking-wider border-x">AM (Start - End)</th>
+                                <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-600 uppercase tracking-wider border-x">PM (Start - End)</th>
+                                <th class="px-4 py-3 text-center text-xs font-bold text-gray-600 uppercase tracking-wider">Daily Total (hrs)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            ${rowHtml}
+                        </tbody>
+                        <tfoot class="bg-gray-50 border-t-2 border-gray-300">
+                            <tr>
+                                <td colspan="5" class="px-4 py-3 text-right font-bold text-gray-800">Weekly Total Submitted:</td>
+                                <td class="px-4 py-3 text-center font-extrabold text-blue-700">${data.totalSubmitted.toFixed(2)}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            `;
+            detailView.classList.remove('hidden');
+        }
+
+        function handleViewDetails(employeeId) {
+            const timesheetData = loadTimesheet(employeeId);
+            renderAdminDetailsView(employeeId, timesheetData);
+        }
+
+        function renderTimesheetView(data) {
+            const employee = getEmployeeContracts()[data.employeeId];
+            const contractHours = employee.contractHours;
+            const isSubmitted = data.isSubmitted;
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            document.getElementById('sub-header').innerHTML = `
+                <span class="font-bold text-gray-700">${employee.name}</span> | Week Starting: ${data.weekStartString} | Contract: <span class="text-blue-600 font-semibold">${contractHours} hours</span>
+            `;
+
+            const rowHtml = days.map(day => {
+                const dayData = data.timesheet[day];
+                const readOnly = isSubmitted ? 'readonly' : '';
+                const dayClass = day === 'Saturday' || day === 'Sunday' ? 'bg-yellow-50' : 'bg-white';
+                
+                return `
+                    <tr class="border-t ${dayClass}">
+                        <td class="px-4 py-3 font-semibold text-gray-800">${day}</td>
+                        
+                        <td class="p-1"><input type="time" data-day="${day}" data-type="amStart" value="${dayData.amStart}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
+                        <td class="p-1"><input type="time" data-day="${day}" data-type="amEnd" value="${dayData.amEnd}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
+                        
+                        <td class="p-1"><input type="time" data-day="${day}" data-type="pmStart" value="${dayData.pmStart}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
+                        <td class="p-1"><input type="time" data-day="${day}" data-type="pmEnd" value="${dayData.pmEnd}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
+                        
+                        <td class="px-4 py-3 font-bold text-center">${dayData.dailyTotal}</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            const submitButtonHtml = isSubmitted ? `
+                <div class="flex items-center space-x-4">
+                    <span class="text-lg font-bold text-green-600">✅ Submitted!</span>
+                    <button id="recallButton" class="py-2 px-4 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition">Recall Submission</button>
+                </div>
+            ` : `
+                <button id="submitButton" class="py-3 px-8 bg-blue-500 text-white text-lg font-semibold rounded-xl shadow-lg hover:bg-blue-600 transition focus:outline-none focus:ring-4 focus:ring-blue-300">
+                    Submit Final Hours
+                </button>
+            `;
+
+            const content = document.getElementById('content-area');
+            content.innerHTML = `
+                <div class="flex flex-col space-y-8">
+                    
+                    <!-- Timesheet Table -->
+                    <div class="bg-white rounded-xl shadow-2xl overflow-x-auto border border-gray-100">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Day</th>
+                                    <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-500 uppercase tracking-wider border-x">AM (Start - End)</th>
+                                    <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-500 uppercase tracking-wider border-x">PM (Start - End)</th>
+                                    <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Daily Total (hrs)</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-200">
+                                ${rowHtml}
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <!-- Footer / Summary / Action -->
+                    <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-100 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
+                        
+                        <!-- Summary -->
+                        <div class="space-y-2 text-sm md:text-base">
+                            <p><span class="font-bold text-gray-700">Total Submitted Hours:</span> <span class="text-blue-700 font-extrabold text-xl">${data.totalSubmitted.toFixed(2)}</span> hrs</p>
+                            <p><span class="font-bold text-gray-700">Total Paid Hours:</span> <span class="text-green-700 font-extrabold text-xl">${data.totalPaid.toFixed(2)}</span> hrs (Max(Submitted, Contract))</p>
+                        </div>
+                        
+                        <!-- Actions -->
+                        <div class="flex flex-col items-center space-y-3">
+                            ${submitButtonHtml}
+                            <button id="logoutButton" class="py-1 px-4 bg-gray-200 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-300 transition">Log Out</button>
+                        </div>
                     </div>
                 </div>
             `;
-        };
-        
-        const renderDetailedTimesheet = (employeeId) => {
-            const data = loadLocalData();
-            const employee = data.roster[employeeId];
-            const timesheets = data.timesheets[currentWeekId] || {};
-            const userWeekData = timesheets[employeeId] || { entries: {} };
-            const entries = userWeekData.entries;
 
-            let detailRows = '';
-            DAYS_OF_WEEK.forEach(day => {
-                const dayEntries = entries[day] || {};
-                detailRows += `
-                    <tr>
-                        <td class="font-semibold">${day}</td>
-                        <td>${dayEntries.amStart || '--'}</td>
-                        <td>${dayEntries.amEnd || '--'}</td>
-                        <td>${dayEntries.pmStart || '--'}</td>
-                        <td>${dayEntries.pmEnd || '--'}</td>
-                    </tr>
-                `;
+            // Attach event listeners
+            document.querySelectorAll('.time-input').forEach(input => {
+                // The 'change' event fires when the input loses focus, providing the auto-save functionality
+                input.addEventListener('change', (e) => handleTimeInput(e, data));
             });
+            document.getElementById('logoutButton').addEventListener('click', handleLogout);
+            
+            if (document.getElementById('submitButton')) {
+                document.getElementById('submitButton').addEventListener('click', () => handleSubmit(data));
+            }
+            if (document.getElementById('recallButton')) {
+                document.getElementById('recallButton').addEventListener('click', () => handleRecall(data));
+            }
+        }
+
+        // --- HANDLERS ---
+
+        function handleTimeInput(e, data) {
+            const input = e.target;
+            const day = input.getAttribute('data-day');
+            const type = input.getAttribute('data-type');
+            const value = input.value;
+            
+            // 1. Update the local timesheet data structure
+            data.timesheet[day][type] = value;
+            
+            // 2. Recalculate totals
+            const contracts = getEmployeeContracts();
+            const contractHours = contracts[data.employeeId]?.contractHours || 0;
+            const calculationResult = calculateTotals(data.timesheet, contractHours);
+            data.timesheet = calculationResult.timesheet;
+            data.totalSubmitted = calculationResult.totalSubmitted;
+            data.totalPaid = calculationResult.totalPaid;
+            
+            // 3. Save and re-render the view (auto-save!)
+            saveTimesheet(data);
+        }
+
+        function handleLogin() {
+            const employeeIdInput = document.getElementById('employeeId');
+            const surnameInput = document.getElementById('surname');
+            
+            const employeeId = employeeIdInput.value.trim().toUpperCase();
+            const inputSurname = surnameInput.value.trim().toUpperCase();
+            
+            const contracts = getEmployeeContracts();
+            
+            updateMessage('', false); // Clear previous messages
+
+            if (!employeeId || !inputSurname) {
+                updateMessage('Please enter both your Staff Number and Last Name.', true);
+                return;
+            }
+
+            const employee = contracts[employeeId];
+
+            if (!employee) {
+                updateMessage(`Login failed: Staff Number "${employeeId}" not found in system.`, true);
+                return;
+            }
+
+            // --- SURNAME VALIDATION ---
+            // If the surname from the input does NOT match the extracted surname from the employee record, reject login.
+            if (employee.surname !== inputSurname) {
+                 updateMessage(`Login failed: Staff Number and Last Name combination is incorrect.`, true);
+                return;
+            }
+            // --- END VALIDATION ---
+
+
+            // Assign the logged-in employee details
+            currentEmployee = { name: employee.name, employeeId: employeeId };
+            
+            if (employeeId === 'A9999') {
+                renderAdminView();
+            } else {
+                const timesheetData = loadTimesheet(employeeId);
+                renderTimesheetView(timesheetData);
+            }
+        }
+
+        function handleLogout() {
+            currentEmployee = null;
+            currentWeekStart = null;
+            renderLoginView();
+        }
+
+        function handleSaveEmployee() {
+            const id = document.getElementById('admin_id').value.trim().toUpperCase();
+            const name = document.getElementById('admin_name').value.trim();
+            const hours = parseFloat(document.getElementById('admin_hours').value);
+
+            if (!id || !name || isNaN(hours)) {
+                alert("Please fill in a valid ID, Name (including a surname), and Contract Hours.");
+                return;
+            }
+            
+            if (id === 'A9999') {
+                 alert("Cannot edit the Admin account details.");
+                return;
+            }
+
+            const contracts = getEmployeeContracts();
+            // Important: We save the new employee with their calculated surname
+            contracts[id] = { 
+                name: name, 
+                contractHours: hours,
+                surname: extractSurname(name) // Calculate and store surname immediately
+            };
+            saveEmployeeContracts(contracts);
+
+            alert(`Employee ${id} (${name}) saved with ${hours} contract hours. Surname for login is: ${extractSurname(name)}.`);
+            renderAdminView(); // Re-render the list and dashboard
+        }
+        
+        function handleDeleteEmployee(employeeId) {
+            if (employeeId === 'A9999') {
+                alert("Cannot delete the Administrator account.");
+                return;
+            }
+
+            // Confirmation Dialog (as requested)
+            if (confirm(`Are you sure you want to permanently DELETE employee ${employeeId}? This action cannot be undone and will delete their contract data.`)) {
+                
+                const contracts = getEmployeeContracts();
+                
+                // Check if the employee still exists before attempting deletion
+                if (!contracts[employeeId]) {
+                    alert(`Error: Employee ${employeeId} not found.`);
+                    renderAdminView(); // Re-render in case of display error
+                    return;
+                }
+
+                // Delete the employee contract
+                delete contracts[employeeId];
+                saveEmployeeContracts(contracts);
+
+                // Optional cleanup: remove timesheet data for the current week
+                const today = new Date();
+                const weekStartString = formatWeekStart(getWeekStart(today));
+                localStorage.removeItem(localStorageKey(employeeId, weekStartString));
+                
+                alert(`Employee ${employeeId} has been successfully deleted.`);
+                renderAdminView(); // Re-render the dashboard and list
+            }
+            // If the user cancels the 'confirm' dialog, nothing happens.
+        }
+
+        function handleSubmit(data) {
+            if (!confirm(`Are you sure you want to SUBMIT the timesheet for ${data.totalSubmitted.toFixed(2)} hours? This will lock the entries.`)) {
+                return;
+            }
+            
+            // 1. Mark as submitted in the data structure
+            data.isSubmitted = true;
+            saveTimesheet(data);
+
+            // 2. Generate and trigger email
+            const contracts = getEmployeeContracts();
+            const employee = contracts[data.employeeId];
+            const recipient = 'timesheet_admin@yourcompany.com';
+            const subject = `TIMESHEET SUBMISSION: ${employee.name} - Week of ${data.weekStartString}`;
+            
+            let body = `Employee: ${employee.name} (${data.employeeId})\n`;
+            body += `Contract Hours: ${employee.contractHours} hrs\n`;
+            body += `\n--- FINAL HOURS ---\n`;
+            body += `Total Submitted: ${data.totalSubmitted.toFixed(2)} hrs\n`;
+            body += `Total PAID: ${data.totalPaid.toFixed(2)} hrs\n`;
+            body += `\n--- DAILY BREAKDOWN ---\n`;
+            
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            days.forEach(day => {
+                const dayData = data.timesheet[day];
+                body += `${day}: ${dayData.amStart || ''}-${dayData.amEnd || ''} | ${dayData.pmStart || ''}-${dayData.pmEnd || ''} (${dayData.dailyTotal} hrs)\n`;
+            });
+
+            // Use the safest way to trigger mailto link
+            const mailtoLink = `mailto:${recipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+            window.location.href = mailtoLink;
+        }
+
+        function handleRecall(data) {
+            if (confirm("Are you sure you want to recall this submitted timesheet? This will unlock the sheet for editing.")) {
+                data.isSubmitted = false;
+                saveTimesheet(data);
+                renderTimesheetView(data);
+            }
+        }
+
+        // --- APPLICATION START ---
+        
+        renderLoginView();
+    </script>
+</body>
+</html>
