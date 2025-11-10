@@ -21,8 +21,8 @@
     <!-- Firebase Imports -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, where, addDoc, getDocs, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, getDocs, collection, query, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-lite.js";
         
         // Setting Debug log level for robust testing
@@ -40,21 +40,17 @@
 
         // --- FIREBASE CONFIGURATION (START) ---
         // !!! IMPORTANT !!!
-        // You MUST replace the JSON.parse(...) line below with your actual firebaseConfig object
+        // You MUST replace the next two lines with your actual firebaseConfig object
         // from your Firebase Project Settings. E.g., const firebaseConfig = { apiKey: "...", ... };
         const firebaseConfig = {
-  apiKey: "AIzaSyB3pPhsuruFwVxu5nFg08g4GFYNNRCFDZw",
-  authDomain: "timesheet-test-18350.firebaseapp.com",
-  projectId: "timesheet-test-18350",
-  storageBucket: "timesheet-test-18350.firebasestorage.app",
-  messagingSenderId: "97086458609",
-  appId: "1:97086458609:web:dcf54891bc1f4aaed6f750",
-  measurementId: "G-626PELC0Q6"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+            apiKey: "AIzaSyB3pPhsuruFwVxu5nFg08g4GFYNNRCFDZw",
+            authDomain: "timesheet-test-18350.firebaseapp.com",
+            projectId: "timesheet-test-18350",
+            storageBucket: "timesheet-test-18350.firebasestorage.app",
+            messagingSenderId: "97086458609",
+            appId: "1:97086458609:web:dcf54891bc1f4aaed6f750"
+        };
+        const initialAuthToken = null;
         // --- FIREBASE CONFIGURATION (END) ---
 
         // Time Sheet Logic Constants
@@ -816,25 +812,13 @@ const analytics = getAnalytics(app);
                 let instruction = `
                     <div class="p-4 bg-red-100 rounded-lg border border-red-400">
                         <h2 class="text-xl font-bold text-red-800">Critical Cloud Connection Error!</h2>
-                        <p class="mt-2 text-red-700">The application failed to connect to your live Firebase database or permission was denied. This is almost certainly due to **incorrect Firestore Security Rules**.</p>
-                        <h3 class="mt-3 text-lg font-semibold text-red-800">🛠️ How to Fix (Temporary Setup Rule):</h3>
-                        <p class="mt-1 text-sm text-red-700">Go to the "Rules" tab in your Firebase Console and replace your current rules with the following TEMPORARY block. This allows the app to write the initial Admin and Employee data.</p>
-                        <pre class="mt-2 p-2 bg-red-50 border border-red-300 rounded text-sm overflow-x-auto text-black">
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    // TEMPORARILY allow authenticated users to read/write the roster for setup
-    match /admin_roster/{employeeId} {
-      allow read, write: if request.auth != null;
-    }
-    // Restrict timesheets to authenticated users
-    match /timesheets/{employeeId} {
-      allow read, write: if request.auth != null;
-    }
-  }
-}
-                        </pre>
-                        <p class="mt-3 font-semibold text-red-800">After you successfully load the Admin Dashboard, REMEMBER to revert to the strict, secure rules!</p>
+                        <p class="mt-2 text-red-700">The application failed to connect to your live Firebase database or permission was denied. This is almost certainly due to **incorrect Firebase Configuration** or **incorrect Firestore Security Rules**.</p>
+                        <h3 class="mt-3 text-lg font-semibold text-red-800">🛠️ Action Checklist:</h3>
+                        <ol class="list-decimal list-inside mt-2 space-y-2 text-sm text-red-700">
+                            <li><strong>Configuration Check:</strong> Ensure your <code>firebaseConfig</code> object (starting on line 35 of the code) is correctly pasted with no missing commas, quotes, or curly braces.</li>
+                            <li><strong>Security Rule Fix:</strong> If the config is correct, you MUST update your Firestore Rules to the temporary setup rule to allow the app to write initial data (check the chat history for the exact rule to paste into your Firebase Console).</li>
+                        </ol>
+                        <p class="mt-3 font-semibold text-red-800">The page will only load when the connection succeeds.</p>
                     </div>
                 `;
 
