@@ -802,20 +802,30 @@
             } catch (error) {
                 console.error("Critical Firebase Initialization Error:", error);
 
-                let instruction = `ERROR: System failed to connect to the cloud. Check your console for details.`;
-                if (error.code === 'permission-denied' || error.message.includes('insufficient permissions')) {
-                    instruction = `
-                        ERROR: Missing or Insufficient Permissions! You MUST update your Firestore Security Rules.
-
-                        The app is failing to read/write the initial user data. To fix this, go to the "Rules" tab in your Firebase Console and set the rules for the **admin_roster** collection to:
-
-                        match /admin_roster/{employeeId} {
-                            allow read, write: if request.auth != null;
-                        }
-
-                        This temporarily allows any authenticated user (the app's anonymous user) to initialize the data. Once the app loads successfully, you should tighten the rule again for security.
-                    `;
-                }
+                let instruction = `
+                    <div class="p-4 bg-red-100 rounded-lg border border-red-400">
+                        <h2 class="text-xl font-bold text-red-800">Critical Cloud Connection Error!</h2>
+                        <p class="mt-2 text-red-700">The application failed to connect to your live Firebase database or permission was denied. This is almost certainly due to **incorrect Firestore Security Rules**.</p>
+                        <h3 class="mt-3 text-lg font-semibold text-red-800">🛠️ How to Fix (Temporary Setup Rule):</h3>
+                        <p class="mt-1 text-sm text-red-700">Go to the "Rules" tab in your Firebase Console and replace your current rules with the following TEMPORARY block. This allows the app to write the initial Admin and Employee data.</p>
+                        <pre class="mt-2 p-2 bg-red-50 border border-red-300 rounded text-sm overflow-x-auto text-black">
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // TEMPORARILY allow authenticated users to read/write the roster for setup
+    match /admin_roster/{employeeId} {
+      allow read, write: if request.auth != null;
+    }
+    // Restrict timesheets to authenticated users
+    match /timesheets/{employeeId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
+                        </pre>
+                        <p class="mt-3 font-semibold text-red-800">After you successfully load the Admin Dashboard, REMEMBER to revert to the strict, secure rules!</p>
+                    </div>
+                `;
 
                 renderLoginView(instruction);
                 return;
