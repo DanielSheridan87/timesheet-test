@@ -6,729 +6,828 @@
     <title>Staff Timesheet System</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                    },
-                }
-            }
-        }
-    </script>
+    <!-- Use Inter font family -->
     <style>
-        /* Custom styles for time inputs */
-        input[type="time"]::-webkit-calendar-picker-indicator {
-            cursor: pointer;
-            filter: invert(40%) sepia(93%) saturate(2000%) hue-rotate(190deg) brightness(80%) contrast(100%);
-        }
-        .clickable-row {
-            cursor: pointer;
-            transition: background-color 0.1s;
-        }
-        .clickable-row:hover {
-            background-color: #f3f4f6;
-        }
+        body { font-family: 'Inter', sans-serif; }
     </style>
 </head>
-<body class="bg-gray-50 flex items-start justify-center min-h-screen p-4 sm:p-8 font-sans">
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
 
-    <div id="app-container" class="w-full max-w-4xl pt-8">
-        
-        <!-- Header -->
-        <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-blue-700">Staff Time Sheet System</h1>
-            <p id="sub-header" class="text-gray-500 mt-2">Log in to track your weekly hours.</p>
-        </header>
-
-        <!-- Main Content Area (Login or Timesheet) -->
-        <main id="content-area"></main>
+    <!-- Main Application Container -->
+    <div id="app" class="w-full max-w-4xl bg-white shadow-2xl rounded-xl p-6 md:p-8">
+        <!-- Content will be rendered here -->
     </div>
 
-    <script>
-        // --- DATA SIMULATION: Using localStorage for stable data persistence ---
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, where, addDoc, getDocs, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore-lite.js";
         
-        const localStorageKey = (employeeId, weekStart) => `timesheet_${employeeId}_${weekStart}`;
-        const employeeDataKey = 'employee_contracts';
+        // Setting Debug log level for robust testing
+        setLogLevel('Debug');
 
-        // Helper function to extract the last name from the full name
-        function extractSurname(fullName) {
-            if (!fullName) return '';
-            const parts = fullName.split(' ');
-            return parts[parts.length - 1].toUpperCase();
-        }
+        // --- GLOBAL STATE & CONFIGURATION ---
+        let db = null;
+        let auth = null;
+        let currentUserId = null;
+        let currentEmployee = null;
+        let isAppReady = false;
+        
+        // MANDATORY: The application ID provided by the environment
+        const appId = 'timesheet-app'; 
 
-        // Initial setup for demo employees in localStorage (Admin data)
-        function getEmployeeContracts() {
-            const data = localStorage.getItem(employeeDataKey);
-            const contracts = data ? JSON.parse(data) : {
-                // NOTE: Surname is derived from the name property for login validation
-                'A9999': { name: 'Administrator', contractHours: 0.0 },
-                'E1001': { name: 'Debbie Abbott', contractHours: 12.5 },
-                'E1002': { name: 'Lorna Keeping', contractHours: 20.0 },
-                'E1003': { name: 'Joy Davies', contractHours: 0.0 }
+        // --- FIREBASE CONFIGURATION (START) ---
+        // !!! IMPORTANT !!!
+        // You MUST replace the JSON.parse(...) line below with your actual firebaseConfig object
+        // from your Firebase Project Settings. E.g., const firebaseConfig = { apiKey: "...", ... };
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- FIREBASE CONFIGURATION (END) ---
+
+        // Time Sheet Logic Constants
+        const MILLISECONDS_IN_HOUR = 3600000;
+        const MILLISECONDS_IN_MINUTE = 60000;
+        const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        
+        // --- AUTHENTICATION & INITIALIZATION ---
+
+        const calculateStartOfWeek = (d) => {
+            d = new Date(d);
+            const day = d.getDay(); // 0 = Sunday, 1 = Monday
+            const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
+            const startOfWeek = new Date(d.setDate(diff));
+            
+            // Set to 00:00:00.000 Monday morning
+            startOfWeek.setHours(0, 0, 0, 0); 
+            return startOfWeek;
+        };
+        
+        const getWeekId = () => {
+            const startOfWeek = calculateStartOfWeek(new Date());
+            return startOfWeek.toISOString().slice(0, 10); // YYYY-MM-DD format
+        };
+        
+        // --- UTILITY FUNCTIONS ---
+
+        const formatTime = (minutes) => {
+            if (minutes === null || isNaN(minutes)) return '';
+            const h = Math.floor(minutes / 60);
+            const m = minutes % 60;
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        };
+
+        const parseTime = (timeStr) => {
+            if (!timeStr) return null;
+            const [h, m] = timeStr.split(':').map(Number);
+            if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+            return (h * 60) + m; // Total minutes
+        };
+
+        const calculateTotalMinutes = (dayEntry) => {
+            let total = 0;
+            // AM
+            const amStart = parseTime(dayEntry.amStart);
+            const amEnd = parseTime(dayEntry.amEnd);
+            if (amStart !== null && amEnd !== null && amEnd > amStart) {
+                total += (amEnd - amStart);
+            }
+            // PM
+            const pmStart = parseTime(dayEntry.pmStart);
+            const pmEnd = parseTime(dayEntry.pmEnd);
+            if (pmStart !== null && pmEnd !== null && pmEnd > pmStart) {
+                total += (pmEnd - pmStart);
+            }
+            return total;
+        };
+
+        const hoursToMinutes = (hours) => hours * 60;
+        const minutesToHours = (minutes) => minutes / 60;
+        
+        // --- DATA ACCESS (Firestore) ---
+
+        const getEmployeeDocRef = (employeeId) => doc(db, 'admin_roster', employeeId);
+        const getTimesheetDocRef = (employeeId, weekId) => doc(db, 'timesheets', `${employeeId}-${weekId}`);
+
+        const getEmployeeData = async (employeeId) => {
+            if (!db) return null;
+            try {
+                const docSnap = await getDoc(getEmployeeDocRef(employeeId));
+                if (docSnap.exists()) {
+                    return { id: docSnap.id, ...docSnap.data() };
+                }
+            } catch (error) {
+                console.error("Error fetching employee data:", error);
+            }
+            return null;
+        };
+
+        const saveEmployeeData = async (employeeData) => {
+            if (!db) return;
+            const { id, ...data } = employeeData;
+            try {
+                await setDoc(getEmployeeDocRef(id), data);
+                console.log("Employee data saved successfully.");
+                return true;
+            } catch (error) {
+                console.error("Error saving employee data:", error);
+                return false;
+            }
+        };
+
+        const deleteEmployeeData = async (employeeId) => {
+            if (!db || employeeId === 'A9999') return false; // Prevent admin deletion
+            try {
+                await deleteDoc(getEmployeeDocRef(employeeId));
+                console.log(`Employee ${employeeId} deleted.`);
+                return true;
+            } catch (error) {
+                console.error("Error deleting employee data:", error);
+                return false;
+            }
+        };
+
+        const getTimesheetData = async (employeeId) => {
+            if (!db) return null;
+            const weekId = getWeekId();
+            const docRef = getTimesheetDocRef(employeeId, weekId);
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    return docSnap.data();
+                }
+            } catch (error) {
+                console.error("Error fetching timesheet data:", error);
+            }
+            return createEmptyTimesheet(employeeId, weekId);
+        };
+        
+        const saveTimesheetData = async (timesheet) => {
+            if (!db || !timesheet.employeeId) return false;
+            const docRef = getTimesheetDocRef(timesheet.employeeId, timesheet.weekId);
+            try {
+                await setDoc(docRef, timesheet);
+                return true;
+            } catch (error) {
+                console.error("Error saving timesheet data:", error);
+                return false;
+            }
+        };
+
+        const createEmptyTimesheet = (employeeId, weekId) => {
+            const days = {};
+            DAYS_OF_WEEK.forEach(day => {
+                days[day] = { amStart: '', amEnd: '', pmStart: '', pmEnd: '' };
+            });
+            return {
+                employeeId,
+                weekId,
+                submitted: false,
+                submissionDate: null,
+                times: days,
+                totalMinutesSubmitted: 0
             };
-            
-            // Add derived surname for easy lookup
-            for (const id in contracts) {
-                contracts[id].surname = extractSurname(contracts[id].name);
-            }
-            return contracts;
-        }
+        };
 
-        function saveEmployeeContracts(contracts) {
-            localStorage.setItem(employeeDataKey, JSON.stringify(contracts));
-        }
+        // --- MAIN APPLICATION LOGIC ---
 
-        // Initialize demo data if not present
-        if (!localStorage.getItem(employeeDataKey)) {
-            saveEmployeeContracts(getEmployeeContracts());
-        }
-
-        let currentEmployee = null; // Holds the logged-in employee data
-        let currentWeekStart = null; // Date object for the Monday start of the current week
-        
-        // --- CORE APPLICATION LOGIC ---
-
-        function getWeekStart(date) {
-            const d = new Date(date);
-            const day = d.getDay();
-            const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust day to Monday (1)
-            const monday = new Date(d.setDate(diff));
+        const calculateAndGetTotals = (timesheet, contractHours) => {
+            let totalMinutesSubmitted = 0;
+            Object.values(timesheet.times).forEach(day => {
+                totalMinutesSubmitted += calculateTotalMinutes(day);
+            });
             
-            // Set time to 00:00:00 to represent the very start of Monday
-            monday.setHours(0, 0, 0, 0);
-            return monday;
-        }
-
-        function formatWeekStart(date) {
-            return date.toISOString().split('T')[0]; // YYYY-MM-DD for storage
-        }
-        
-        function calculateTimeDifference(start, end) {
-            if (!start || !end) return 0;
+            const hoursSubmitted = minutesToHours(totalMinutesSubmitted);
+            const contractMinutes = hoursToMinutes(contractHours);
+            const paidMinutes = Math.max(totalMinutesSubmitted, contractMinutes);
             
-            const [startHour, startMin] = start.split(':').map(Number);
-            const [endHour, endMin] = end.split(':').map(Number);
-            
-            // Convert to minutes
-            const startTimeMinutes = startHour * 60 + startMin;
-            const endTimeMinutes = endHour * 60 + endMin;
-            
-            if (endTimeMinutes <= startTimeMinutes) return 0; // Invalid entry
-            
-            const diffMinutes = endTimeMinutes - startTimeMinutes;
-            return diffMinutes / 60; // Convert to hours
-        }
-
-        function calculateTotals(timesheetData, contractHours) {
-            let totalSubmittedHours = 0;
-            
-            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-            
-            // Create a temporary data structure if timesheetData is null/empty for a new week
-            const currentTimesheet = timesheetData || days.reduce((acc, day) => {
-                acc[day] = { amStart: '', amEnd: '', pmStart: '', pmEnd: '', dailyTotal: '0.00' };
-                return acc;
-            }, {});
-
-            for (const day of days) {
-                const dayEntry = currentTimesheet[day] || {};
-                
-                const amHours = calculateTimeDifference(dayEntry.amStart, dayEntry.amEnd);
-                const pmHours = calculateTimeDifference(dayEntry.pmStart, dayEntry.pmEnd);
-                
-                currentTimesheet[day].dailyTotal = (amHours + pmHours).toFixed(2);
-                totalSubmittedHours += amHours + pmHours;
-            }
-            
-            const totalSubmitted = parseFloat(totalSubmittedHours.toFixed(2));
-            const totalPaid = Math.max(totalSubmitted, contractHours);
-            
-            return { 
-                timesheet: currentTimesheet, 
-                totalSubmitted, 
-                totalPaid 
+            return {
+                totalMinutesSubmitted: totalMinutesSubmitted,
+                hoursSubmitted: hoursSubmitted,
+                paidHours: minutesToHours(paidMinutes),
             };
-        }
-        
-        function loadTimesheet(employeeId) {
-            const today = new Date();
-            currentWeekStart = getWeekStart(today);
-            const weekStartString = formatWeekStart(currentWeekStart);
+        };
 
-            const storedDataRaw = localStorage.getItem(localStorageKey(employeeId, weekStartString));
+        const handleLogin = async () => {
+            if (!isAppReady) return;
+
+            const staffNumber = document.getElementById('staffNumber').value.trim();
+            const lastName = document.getElementById('lastName').value.trim();
+            const loginFeedback = document.getElementById('loginFeedback');
+            loginFeedback.textContent = '';
             
-            let timesheetData = storedDataRaw ? JSON.parse(storedDataRaw) : null;
-            
-            // Get contract hours
-            const contracts = getEmployeeContracts();
-            const contractHours = contracts[employeeId]?.contractHours || 0;
-            
-            // Calculate and get the structured data back
-            const calculationResult = calculateTotals(timesheetData, contractHours);
-            
-            return { 
-                employeeId, 
-                weekStartString, 
-                timesheet: calculationResult.timesheet,
-                totalSubmitted: calculationResult.totalSubmitted,
-                totalPaid: calculationResult.totalPaid,
-                isSubmitted: timesheetData ? (timesheetData.isSubmitted || false) : false
-            };
-        }
-        
-        function saveTimesheet(data) {
-            const weekStartString = formatWeekStart(currentWeekStart);
-            localStorage.setItem(localStorageKey(data.employeeId, weekStartString), JSON.stringify({
-                isSubmitted: data.isSubmitted,
-                ...data.timesheet
-            }));
-            // Only re-render staff view, admin view needs explicit refresh/update
-            if (currentEmployee.employeeId !== 'A9999') {
-                renderTimesheetView(data);
+            if (!staffNumber || !lastName) {
+                loginFeedback.textContent = "Please enter both Staff Number and Last Name.";
+                return;
             }
-        }
 
-        // Function to get all timesheet summaries for the current week
-        function getAllTimesheetSummaries() {
-            const today = new Date();
-            const currentWeekStart = getWeekStart(today);
-            const weekStartString = formatWeekStart(currentWeekStart);
-            const contracts = getEmployeeContracts();
-            const summaries = [];
-            
-            // Iterate over all employees (excluding the Admin itself)
-            for (const employeeId in contracts) {
-                if (employeeId === 'A9999') continue;
-                
-                const employee = contracts[employeeId];
-                const contractHours = employee.contractHours;
-                
-                const storedDataRaw = localStorage.getItem(localStorageKey(employeeId, weekStartString));
-                let timesheetData = storedDataRaw ? JSON.parse(storedDataRaw) : null;
+            // 1. Fetch employee data
+            const employee = await getEmployeeData(staffNumber);
 
-                const { totalSubmitted, totalPaid } = calculateTotals(timesheetData, contractHours);
-                const isSubmitted = timesheetData ? (timesheetData.isSubmitted || false) : false;
-
-                summaries.push({
-                    employeeId,
-                    name: employee.name,
-                    contractHours,
-                    totalSubmitted: totalSubmitted,
-                    totalPaid: totalPaid,
-                    isSubmitted: isSubmitted
-                });
+            if (!employee) {
+                loginFeedback.textContent = `Login failed: Staff Number "${staffNumber}" not found in system.`;
+                return;
             }
-            return summaries;
-        }
+
+            // 2. Simple surname verification (case-insensitive check against the last word of fullName)
+            const employeeLastName = employee.fullName.split(' ').pop();
+            if (lastName.toLowerCase() !== employeeLastName.toLowerCase()) {
+                loginFeedback.textContent = "Login failed: Staff Number and Last Name combination is incorrect.";
+                return;
+            }
+
+            // 3. Login successful
+            currentEmployee = employee;
+            if (currentEmployee.isAdmin) {
+                renderAdminView();
+            } else {
+                renderTimesheetView();
+            }
+        };
 
         // --- RENDER FUNCTIONS ---
-        
-        function renderLoginView() {
-            document.getElementById('sub-header').textContent = 'Please enter your Staff Number and Last Name to access your timesheet.';
-            const content = document.getElementById('content-area');
-            content.innerHTML = `
-                <div class="flex flex-col items-center">
-                    <div class="w-full max-w-md bg-white p-6 sm:p-8 rounded-xl shadow-2xl border border-gray-100">
-                        <label for="employeeId" class="block text-sm font-medium text-gray-700 mb-2">Staff Number (or Employee ID)</label>
-                        <input 
-                            type="text" 
-                            id="employeeId" 
-                            placeholder="S12345"
-                            class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-base mb-4 uppercase"
-                        >
-                        
-                        <label for="surname" class="block text-sm font-medium text-gray-700 mb-2">Last Name (for verification)</label>
-                        <input 
-                            type="text" 
-                            id="surname" 
-                            placeholder="Smith"
-                            class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-base mb-4"
-                        >
 
-                        <button 
-                            id="loginButton"
-                            class="w-full py-3 px-4 rounded-lg text-white font-semibold shadow-lg transition duration-300 ease-in-out bg-blue-500 hover:bg-blue-600 focus:outline-none focus:ring-4 focus:ring-blue-300"
-                        >
-                            Access Timesheet
-                        </button>
-                        
-                        <p id="message-box" class="text-center mt-4 text-sm text-red-600 hidden"></p>
+        const renderLoginView = (message = '') => {
+            document.getElementById('app').innerHTML = `
+                <div class="max-w-md mx-auto p-6 bg-white rounded-xl shadow-lg border border-gray-200">
+                    <h1 class="text-3xl font-extrabold text-indigo-700 mb-6 text-center">Staff Timesheet Login</h1>
+                    <div id="loginFeedback" class="text-sm text-red-600 mb-4 font-semibold">${message}</div>
+                    
+                    <div class="mb-4">
+                        <label for="staffNumber" class="block text-sm font-medium text-gray-700 mb-1">Staff Number (or Employee ID)</label>
+                        <input type="text" id="staffNumber" placeholder="S12345" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
                     </div>
+                    
+                    <div class="mb-6">
+                        <label for="lastName" class="block text-sm font-medium text-gray-700 mb-1">Last Name (for verification)</label>
+                        <input type="text" id="lastName" placeholder="Smith" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150">
+                    </div>
+
+                    <button id="loginButton" class="w-full py-3 px-4 rounded-lg text-white font-bold transition duration-300 shadow-md">
+                        ${isAppReady ? 'Access Timesheet' : 'Connecting to Cloud...'}
+                    </button>
                 </div>
             `;
-            
-            document.getElementById('loginButton').addEventListener('click', handleLogin);
-            
-            // Handle Enter key for both inputs
-            document.getElementById('employeeId').addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') handleLogin();
-            });
-            document.getElementById('surname').addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') handleLogin();
-            });
-        }
-        
-        function updateMessage(text, isError = true) {
-            const messageBox = document.getElementById('message-box');
-            if (messageBox) {
-                messageBox.textContent = text;
-                messageBox.className = `text-center mt-4 text-sm ${isError ? 'text-red-600' : 'text-green-600'} visible`;
+
+            const loginButton = document.getElementById('loginButton');
+            if (isAppReady) {
+                loginButton.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+                loginButton.disabled = false;
+                loginButton.onclick = handleLogin;
+            } else {
+                loginButton.classList.add('bg-gray-400');
+                loginButton.disabled = true;
             }
-        }
-
-        function renderAdminView() {
-            currentWeekStart = getWeekStart(new Date());
-            document.getElementById('sub-header').textContent = `Administrator Portal - Week Starting: ${formatWeekStart(currentWeekStart)}`;
-            const content = document.getElementById('content-area');
-            const contracts = getEmployeeContracts();
-            const summaries = getAllTimesheetSummaries();
-
-            const summaryRowHtml = summaries.map(s => {
-                const statusClass = s.isSubmitted ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800';
-                const statusText = s.isSubmitted ? 'Submitted' : 'In Progress';
-
-                return `
-                    <tr class="border-t clickable-row" data-employee-id="${s.employeeId}">
-                        <td class="px-4 py-3 font-semibold text-gray-800 flex items-center">
-                            <span class="underline hover:text-blue-600 cursor-pointer">${s.employeeId} - ${s.name}</span>
-                        </td>
-                        <td class="px-4 py-3 text-center">${s.contractHours}</td>
-                        <td class="px-4 py-3 text-center text-blue-700 font-bold">${s.totalSubmitted}</td>
-                        <td class="px-4 py-3 text-center text-green-700 font-bold">${s.totalPaid}</td>
-                        <td class="px-4 py-3 text-center">
-                            <span class="text-xs font-medium px-2.5 py-0.5 rounded-full ${statusClass}">${statusText}</span>
-                        </td>
-                    </tr>
-                `;
-            }).join('');
             
-            const userListHtml = Object.entries(contracts).filter(([id]) => id !== 'A9999').map(([id, data]) => `
-                <li class="p-3 border-b border-gray-100 flex justify-between items-center text-sm">
-                    <span class="font-semibold text-gray-800">${id} - ${data.name}</span>
-                    <span class="text-blue-600">${data.contractHours} hrs/wk</span>
-                    <div class="flex items-center space-x-3">
-                        <button data-id="${id}" class="edit-btn text-xs text-blue-500 hover:text-blue-700 font-medium">Edit</button>
-                        <button data-id="${id}" class="delete-btn text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
-                    </div>
-                </li>
-            `).join('');
+            document.getElementById('staffNumber')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+            document.getElementById('lastName')?.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleLogin(); });
+        };
 
-
-            content.innerHTML = `
-                <div class="flex flex-col gap-8">
-                    
-                    <!-- Weekly Timesheet Summary Dashboard -->
-                    <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-100">
-                        <h2 class="text-2xl font-bold mb-4 text-gray-800">Weekly Timesheet Summary</h2>
-                        <div class="overflow-x-auto mb-4">
-                            <table class="min-w-full divide-y divide-gray-200">
-                                <thead class="bg-gray-50">
-                                    <tr>
-                                        <th class="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Employee (Click to View)</th>
-                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Contract (Hrs)</th>
-                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Submitted (Hrs)</th>
-                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Paid (Hrs)</th>
-                                        <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="admin-summary-body" class="divide-y divide-gray-200">
-                                    ${summaryRowHtml.length > 0 ? summaryRowHtml : `
-                                        <tr><td colspan="5" class="text-center py-6 text-gray-500">No employee data found for this week.</td></tr>
-                                    `}
-                                </tbody>
-                            </table>
-                        </div>
-                        
-                        <!-- DETAIL VIEW SECTION (Appears when employee name is clicked) -->
-                        <div id="admin-detail-view" class="mt-6 border-t pt-6 hidden"></div>
-                    </div>
-
-                    <!-- Management Forms -->
-                    <div class="flex flex-col lg:flex-row gap-8">
-                        <!-- User Management Form -->
-                        <div class="lg:w-1/3 bg-white p-6 rounded-xl shadow-md border border-gray-100 h-fit">
-                            <h2 class="text-xl font-bold mb-4 text-gray-800">Add / Edit Employee</h2>
-                            <input type="text" id="admin_id" placeholder="Employee ID (E1001)" class="w-full p-2 border rounded mb-3 uppercase">
-                            <input type="text" id="admin_name" placeholder="Full Name (e.g. Alice Johnson)" class="w-full p-2 border rounded mb-3">
-                            <input type="number" id="admin_hours" placeholder="Contract Hours (0.0 or 12.5)" step="0.5" class="w-full p-2 border rounded mb-4">
-                            <button id="saveAdminButton" class="w-full py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition">Add/Update Employee</button>
-                        </div>
-
-                        <!-- Current Users List -->
-                        <div class="lg:w-2/3 bg-white p-6 rounded-xl shadow-md border border-gray-100">
-                            <h2 class="text-xl font-bold mb-4 text-gray-800">Current System Users</h2>
-                            <ul id="admin-user-list" class="divide-y divide-gray-100 max-h-96 overflow-y-auto">
-                                ${userListHtml.length > 0 ? userListHtml : '<li class="p-3 text-gray-500">No employees defined yet.</li>'}
-                            </ul>
-                        </div>
-                    </div>
-                    
-                    <button id="logoutButton" class="w-full py-3 mt-4 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition max-w-xs self-center">Log Out</button>
-
-                </div>
-            `;
-            
-            // Attach event listeners for Admin View
-            document.getElementById('saveAdminButton').addEventListener('click', handleSaveEmployee);
-            document.getElementById('logoutButton').addEventListener('click', handleLogout);
-            
-            // Click handler for viewing employee details
-            document.querySelectorAll('#admin-summary-body .clickable-row').forEach(row => {
-                row.addEventListener('click', (e) => {
-                    const employeeId = row.getAttribute('data-employee-id');
-                    handleViewDetails(employeeId);
-                });
-            });
-            
-            // Edit button handler
-            document.querySelectorAll('.edit-btn').forEach(button => {
-                button.addEventListener('click', (e) => {
-                    const id = e.target.getAttribute('data-id');
-                    const emp = contracts[id];
-                    document.getElementById('admin_id').value = id;
-                    document.getElementById('admin_name').value = emp.name;
-                    document.getElementById('admin_hours').value = emp.contractHours;
-                });
-            });
-
-            // NEW: Delete button handler
-            document.querySelectorAll('.delete-btn').forEach(button => {
-                button.addEventListener('click', (e) => {
-                    const id = e.target.getAttribute('data-id');
-                    handleDeleteEmployee(id);
-                });
-            });
-        }
-        
-        // New function to render the detailed timesheet view within the Admin Dashboard
-        function renderAdminDetailsView(employeeId, data) {
-            const detailView = document.getElementById('admin-detail-view');
-            const employee = getEmployeeContracts()[employeeId];
-            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-            const rowHtml = days.map(day => {
-                const dayData = data.timesheet[day];
-                const dayClass = day === 'Saturday' || day === 'Sunday' ? 'bg-yellow-50' : 'bg-white';
-                
-                return `
-                    <tr class="border-t ${dayClass}">
-                        <td class="px-4 py-3 font-semibold text-gray-800">${day}</td>
-                        <td class="p-1 text-center">${dayData.amStart || '-'}</td>
-                        <td class="p-1 text-center">${dayData.amEnd || '-'}</td>
-                        <td class="p-1 text-center">${dayData.pmStart || '-'}</td>
-                        <td class="p-1 text-center">${dayData.pmEnd || '-'}</td>
-                        <td class="px-4 py-3 font-bold text-center">${dayData.dailyTotal}</td>
-                    </tr>
-                `;
-            }).join('');
-
-            detailView.innerHTML = `
-                <h3 class="xl font-bold mb-3 text-gray-800">Detailed Entries for: ${employee.name} (${employeeId})</h3>
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg">
-                        <thead class="bg-gray-100">
-                            <tr>
-                                <th class="px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider">Day</th>
-                                <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-600 uppercase tracking-wider border-x">AM (Start - End)</th>
-                                <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-600 uppercase tracking-wider border-x">PM (Start - End)</th>
-                                <th class="px-4 py-3 text-center text-xs font-bold text-gray-600 uppercase tracking-wider">Daily Total (hrs)</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-200">
-                            ${rowHtml}
-                        </tbody>
-                        <tfoot class="bg-gray-50 border-t-2 border-gray-300">
-                            <tr>
-                                <td colspan="5" class="px-4 py-3 text-right font-bold text-gray-800">Weekly Total Submitted:</td>
-                                <td class="px-4 py-3 text-center font-extrabold text-blue-700">${data.totalSubmitted.toFixed(2)}</td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
-            `;
-            detailView.classList.remove('hidden');
-        }
-
-        function handleViewDetails(employeeId) {
-            const timesheetData = loadTimesheet(employeeId);
-            renderAdminDetailsView(employeeId, timesheetData);
-        }
-
-        function renderTimesheetView(data) {
-            const employee = getEmployeeContracts()[data.employeeId];
-            const contractHours = employee.contractHours;
-            const isSubmitted = data.isSubmitted;
-            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-            document.getElementById('sub-header').innerHTML = `
-                <span class="font-bold text-gray-700">${employee.name}</span> | Week Starting: ${data.weekStartString} | Contract: <span class="text-blue-600 font-semibold">${contractHours} hours</span>
-            `;
-
-            const rowHtml = days.map(day => {
-                const dayData = data.timesheet[day];
-                const readOnly = isSubmitted ? 'readonly' : '';
-                const dayClass = day === 'Saturday' || day === 'Sunday' ? 'bg-yellow-50' : 'bg-white';
-                
-                return `
-                    <tr class="border-t ${dayClass}">
-                        <td class="px-4 py-3 font-semibold text-gray-800">${day}</td>
-                        
-                        <td class="p-1"><input type="time" data-day="${day}" data-type="amStart" value="${dayData.amStart}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
-                        <td class="p-1"><input type="time" data-day="${day}" data-type="amEnd" value="${dayData.amEnd}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
-                        
-                        <td class="p-1"><input type="time" data-day="${day}" data-type="pmStart" value="${dayData.pmStart}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
-                        <td class="p-1"><input type="time" data-day="${day}" data-type="pmEnd" value="${dayData.pmEnd}" ${readOnly} class="time-input w-full p-2 border rounded text-sm text-center"></td>
-                        
-                        <td class="px-4 py-3 font-bold text-center">${dayData.dailyTotal}</td>
-                    </tr>
-                `;
-            }).join('');
-            
-            const submitButtonHtml = isSubmitted ? `
-                <div class="flex items-center space-x-4">
-                    <span class="text-lg font-bold text-green-600">✅ Submitted!</span>
-                    <button id="recallButton" class="py-2 px-4 bg-yellow-500 text-white font-semibold rounded-lg hover:bg-yellow-600 transition">Recall Submission</button>
-                </div>
-            ` : `
-                <button id="submitButton" class="py-3 px-8 bg-blue-500 text-white text-lg font-semibold rounded-xl shadow-lg hover:bg-blue-600 transition focus:outline-none focus:ring-4 focus:ring-blue-300">
-                    Submit Final Hours
+        const renderSignOutButton = () => {
+            return `
+                <button onclick="handleSignOut()" class="bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-1 px-3 rounded-full transition duration-150 shadow-sm ml-4">
+                    Sign Out
                 </button>
             `;
+        };
 
-            const content = document.getElementById('content-area');
-            content.innerHTML = `
-                <div class="flex flex-col space-y-8">
+        window.handleSignOut = () => {
+            currentEmployee = null;
+            renderLoginView();
+        };
+
+        // --- TIMESHEET VIEW (STAFF) ---
+
+        const handleTimeInput = async (day, period, type, event) => {
+            let timesheet = await getTimesheetData(currentEmployee.id);
+            if (timesheet.submitted) return; 
+
+            timesheet.times[day][`${period}${type}`] = event.target.value;
+            
+            // Recalculate totals and update the document
+            const totals = calculateAndGetTotals(timesheet, currentEmployee.contractHours);
+            timesheet.totalMinutesSubmitted = totals.totalMinutesSubmitted;
+
+            await saveTimesheetData(timesheet);
+        };
+
+        const handleTimesheetSubmit = async () => {
+            const weekId = getWeekId();
+            const docRef = getTimesheetDocRef(currentEmployee.id, weekId);
+            
+            // Use a transaction to ensure atomic update (important for shared data)
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const docSnap = await transaction.get(docRef);
+                    if (!docSnap.exists) {
+                        throw "Timesheet does not exist for submission.";
+                    }
+                    const timesheet = docSnap.data();
+
+                    if (timesheet.submitted) {
+                        throw "Timesheet already submitted.";
+                    }
                     
-                    <!-- Timesheet Table -->
-                    <div class="bg-white rounded-xl shadow-2xl overflow-x-auto border border-gray-100">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider">Day</th>
-                                    <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-500 uppercase tracking-wider border-x">AM (Start - End)</th>
-                                    <th colspan="2" class="text-center py-3 text-xs font-bold text-gray-500 uppercase tracking-wider border-x">PM (Start - End)</th>
-                                    <th class="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Daily Total (hrs)</th>
+                    // Final calculation before marking submitted
+                    const totals = calculateAndGetTotals(timesheet, currentEmployee.contractHours);
+                    
+                    transaction.update(docRef, {
+                        submitted: true,
+                        submissionDate: new Date().toISOString(),
+                        totalMinutesSubmitted: totals.totalMinutesSubmitted // Ensure final total is saved
+                    });
+                    
+                    // Trigger email (mailto link)
+                    const emailBody = `
+                        Timesheet Submission Report:
+                        Employee: ${currentEmployee.fullName} (${currentEmployee.id})
+                        Week Starting: ${weekId}
+                        Total Hours Submitted: ${totals.hoursSubmitted.toFixed(2)}
+                        Contract Hours: ${currentEmployee.contractHours.toFixed(2)}
+                        Total PAID Hours: ${totals.paidHours.toFixed(2)}
+
+                        Please see the timesheet system for detailed entry times.
+                    `;
+                    
+                    const mailtoLink = `mailto:timesheet_admin@yourcompany.com?subject=Timesheet Submission for ${currentEmployee.fullName} (${weekId})&body=${encodeURIComponent(emailBody.trim())}`;
+                    
+                    // Safely trigger mailto to prevent mobile environment crash
+                    const a = document.createElement('a');
+                    a.href = mailtoLink;
+                    a.target = '_blank'; 
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                });
+                
+                // Refresh the view after transaction success
+                renderTimesheetView("Submission successful! Email draft opened.");
+
+            } catch (error) {
+                console.error("Submission failed:", error);
+                const message = (typeof error === 'string') ? error : "An error occurred during submission.";
+                renderTimesheetView(message);
+            }
+        };
+
+        const handleTimesheetRecall = async () => {
+            const weekId = getWeekId();
+            const docRef = getTimesheetDocRef(currentEmployee.id, weekId);
+            
+            if (confirm("Are you sure you want to recall this submission? You will be able to edit and re-submit.")) {
+                try {
+                    await setDoc(docRef, { submitted: false, submissionDate: null }, { merge: true });
+                    renderTimesheetView("Submission recalled. You may now edit your hours.");
+                } catch (error) {
+                    console.error("Recall failed:", error);
+                    renderTimesheetView("Error recalling submission.");
+                }
+            }
+        };
+
+        const renderTimesheetView = async (message = '') => {
+            let timesheet = await getTimesheetData(currentEmployee.id);
+            const { hoursSubmitted, paidHours } = calculateAndGetTotals(timesheet, currentEmployee.contractHours);
+            const isSubmitted = timesheet.submitted;
+            const weekId = getWeekId();
+            
+            const timesheetRows = DAYS_OF_WEEK.map(day => {
+                const dayData = timesheet.times[day] || { amStart: '', amEnd: '', pmStart: '', pmEnd: '' };
+                const dayTotalMinutes = calculateTotalMinutes(dayData);
+                const dayTotalHours = minutesToHours(dayTotalMinutes).toFixed(2);
+                
+                const timeInput = (period, type, value) => `
+                    <input type="time" value="${value}" 
+                           onchange="handleTimeInput('${day}', '${period}', '${type}', event)"
+                           ${isSubmitted ? 'disabled' : ''}
+                           class="w-full text-center p-1 border rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ${isSubmitted ? 'bg-gray-100' : 'bg-white'}"
+                    >
+                `;
+
+                return `
+                    <tr class="hover:bg-indigo-50 transition duration-100 border-b">
+                        <td class="font-semibold px-4 py-2 text-indigo-700">${day}</td>
+                        <td class="p-2">${timeInput('am', 'Start', dayData.amStart)}</td>
+                        <td class="p-2">${timeInput('am', 'End', dayData.amEnd)}</td>
+                        <td class="p-2">${timeInput('pm', 'Start', dayData.pmStart)}</td>
+                        <td class="p-2">${timeInput('pm', 'End', dayData.pmEnd)}</td>
+                        <td class="text-center font-bold text-gray-800 px-4">${dayTotalHours}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const submissionControls = isSubmitted ? 
+                `<div class="flex items-center space-x-4">
+                    <span class="text-lg font-bold text-green-600">✅ Submitted</span>
+                    <button onclick="handleTimesheetRecall()" class="bg-yellow-500 hover:bg-yellow-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition duration-150">
+                        Recall Submission
+                    </button>
+                </div>` : 
+                `<button onclick="handleTimesheetSubmit()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition duration-150">
+                    Submit Final Hours
+                </button>`;
+
+            document.getElementById('app').innerHTML = `
+                <div class="space-y-6">
+                    <header class="flex justify-between items-center pb-4 border-b border-gray-200">
+                        <h1 class="text-3xl font-extrabold text-indigo-700">Timesheet for ${currentEmployee.fullName}</h1>
+                        <div class="flex items-center">
+                            <span class="text-sm text-gray-600">Contract: ${currentEmployee.contractHours.toFixed(1)} hrs</span>
+                            ${renderSignOutButton()}
+                        </div>
+                    </header>
+                    
+                    ${message ? `<div class="bg-blue-100 text-blue-800 p-3 rounded-lg font-medium">${message}</div>` : ''}
+
+                    <p class="text-gray-500 font-medium">Week Starting: ${weekId}</p>
+
+                    <div class="overflow-x-auto rounded-lg shadow-md border border-gray-300">
+                        <table class="min-w-full bg-white text-sm">
+                            <thead class="bg-indigo-50 border-b border-gray-300">
+                                <tr class="text-left text-gray-700">
+                                    <th class="px-4 py-3">Day</th>
+                                    <th class="p-3">AM Start</th>
+                                    <th class="p-3">AM End</th>
+                                    <th class="p-3">PM Start</th>
+                                    <th class="p-3">PM End</th>
+                                    <th class="px-4 py-3 text-center">Daily Total (H)</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-gray-200">
-                                ${rowHtml}
+                            <tbody>
+                                ${timesheetRows}
                             </tbody>
                         </table>
                     </div>
-                    
-                    <!-- Footer / Summary / Action -->
-                    <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-100 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
-                        
-                        <!-- Summary -->
-                        <div class="space-y-2 text-sm md:text-base">
-                            <p><span class="font-bold text-gray-700">Total Submitted Hours:</span> <span class="text-blue-700 font-extrabold text-xl">${data.totalSubmitted.toFixed(2)}</span> hrs</p>
-                            <p><span class="font-bold text-gray-700">Total Paid Hours:</span> <span class="text-green-700 font-extrabold text-xl">${data.totalPaid.toFixed(2)}</span> hrs (Max(Submitted, Contract))</p>
+
+                    <div class="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0 p-4 bg-indigo-50 rounded-lg shadow-inner">
+                        <div class="text-lg font-semibold text-gray-800">
+                            Total Submitted Hours: <span class="text-indigo-700">${hoursSubmitted.toFixed(2)}</span>
                         </div>
-                        
-                        <!-- Actions -->
-                        <div class="flex flex-col items-center space-y-3">
-                            ${submitButtonHtml}
-                            <button id="logoutButton" class="py-1 px-4 bg-gray-200 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-300 transition">Log Out</button>
+                        <div class="text-xl font-extrabold text-green-700 bg-green-100 p-2 rounded-lg">
+                            Total PAID Hours: ${paidHours.toFixed(2)}
+                        </div>
+                        <div>
+                            ${submissionControls}
                         </div>
                     </div>
                 </div>
             `;
-
-            // Attach event listeners
-            document.querySelectorAll('.time-input').forEach(input => {
-                // The 'change' event fires when the input loses focus, providing the auto-save functionality
-                input.addEventListener('change', (e) => handleTimeInput(e, data));
-            });
-            document.getElementById('logoutButton').addEventListener('click', handleLogout);
             
-            if (document.getElementById('submitButton')) {
-                document.getElementById('submitButton').addEventListener('click', () => handleSubmit(data));
+            // Re-attach global functions for inline HTML
+            window.handleTimeInput = handleTimeInput;
+            window.handleTimesheetSubmit = handleTimesheetSubmit;
+            window.handleTimesheetRecall = handleTimesheetRecall;
+        };
+
+        // --- ADMIN VIEW ---
+
+        const renderTimesheetDetail = (employeeId, timesheet) => {
+            const detailRows = DAYS_OF_WEEK.map(day => {
+                const dayData = timesheet.times[day] || {};
+                const dayTotalMinutes = calculateTotalMinutes(dayData);
+                const dayTotalHours = minutesToHours(dayTotalMinutes).toFixed(2);
+                
+                return `
+                    <tr class="border-b hover:bg-yellow-50">
+                        <td class="font-medium text-gray-700 px-4 py-2">${day}</td>
+                        <td class="px-4 py-2">${dayData.amStart || '-'}</td>
+                        <td class="px-4 py-2">${dayData.amEnd || '-'}</td>
+                        <td class="px-4 py-2">${dayData.pmStart || '-'}</td>
+                        <td class="px-4 py-2">${dayData.pmEnd || '-'}</td>
+                        <td class="px-4 py-2 font-bold">${dayTotalHours}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            return `
+                <div id="detailView" class="mt-8 p-4 bg-white rounded-lg shadow-inner border border-yellow-300">
+                    <h3 class="text-xl font-bold text-yellow-700 mb-4 border-b pb-2">Detailed Entries for ${currentEmployeeDetail.fullName}</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full bg-white text-sm">
+                            <thead class="bg-yellow-100">
+                                <tr>
+                                    <th class="text-left px-4 py-2">Day</th>
+                                    <th class="text-left px-4 py-2">AM Start</th>
+                                    <th class="text-left px-4 py-2">AM End</th>
+                                    <th class="text-left px-4 py-2">PM Start</th>
+                                    <th class="text-left px-4 py-2">PM End</th>
+                                    <th class="text-left px-4 py-2">Hours Logged</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${detailRows}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        let currentEmployeeDetail = null;
+
+        const showEmployeeDetails = async (employeeId, employeeName) => {
+            currentEmployeeDetail = await getEmployeeData(employeeId); // Used for detail header
+            const timesheet = await getTimesheetData(employeeId);
+            const detailHtml = renderTimesheetDetail(employeeId, timesheet);
+            
+            // Target the existing detail container in the admin view
+            const detailContainer = document.getElementById('employeeDetailContainer');
+            if (detailContainer) {
+                detailContainer.innerHTML = detailHtml;
+                // Scroll down to the detail view
+                detailContainer.scrollIntoView({ behavior: 'smooth' });
             }
-            if (document.getElementById('recallButton')) {
-                document.getElementById('recallButton').addEventListener('click', () => handleRecall(data));
-            }
-        }
+        };
 
-        // --- HANDLERS ---
+        const renderAdminView = () => {
+            document.getElementById('app').innerHTML = `
+                <div class="space-y-8">
+                    <header class="flex justify-between items-center pb-4 border-b border-indigo-200">
+                        <h1 class="text-3xl font-extrabold text-indigo-700">Admin Dashboard</h1>
+                        ${renderSignOutButton()}
+                    </header>
 
-        function handleTimeInput(e, data) {
-            const input = e.target;
-            const day = input.getAttribute('data-day');
-            const type = input.getAttribute('data-type');
-            const value = input.value;
+                    <!-- Employee Management -->
+                    <section class="p-6 bg-indigo-50 rounded-xl shadow-inner border border-indigo-200">
+                        <h2 class="text-2xl font-bold text-indigo-800 mb-4">1. Employee Management</h2>
+                        <div id="employeeForm"></div>
+                        <div id="userList" class="mt-6"></div>
+                    </section>
+                    
+                    <!-- Timesheet Summary -->
+                    <section class="p-6 bg-white rounded-xl shadow-lg border border-gray-300">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-4">2. Weekly Timesheet Summary (${getWeekId()})</h2>
+                        <div id="summaryTableContainer">Loading timesheet summary...</div>
+                    </section>
+
+                    <!-- Employee Detail View -->
+                    <div id="employeeDetailContainer">
+                        <!-- Detailed entries will load here after clicking an employee name -->
+                    </div>
+                </div>
+            `;
+            renderEmployeeForm();
+            fetchAndRenderSummary();
             
-            // 1. Update the local timesheet data structure
-            data.timesheet[day][type] = value;
-            
-            // 2. Recalculate totals
-            const contracts = getEmployeeContracts();
-            const contractHours = contracts[data.employeeId]?.contractHours || 0;
-            const calculationResult = calculateTotals(data.timesheet, contractHours);
-            data.timesheet = calculationResult.timesheet;
-            data.totalSubmitted = calculationResult.totalSubmitted;
-            data.totalPaid = calculationResult.totalPaid;
-            
-            // 3. Save and re-render the view (auto-save!)
-            saveTimesheet(data);
-        }
-
-        function handleLogin() {
-            const employeeIdInput = document.getElementById('employeeId');
-            const surnameInput = document.getElementById('surname');
-            
-            const employeeId = employeeIdInput.value.trim().toUpperCase();
-            const inputSurname = surnameInput.value.trim().toUpperCase();
-            
-            const contracts = getEmployeeContracts();
-            
-            updateMessage('', false); // Clear previous messages
-
-            if (!employeeId || !inputSurname) {
-                updateMessage('Please enter both your Staff Number and Last Name.', true);
-                return;
-            }
-
-            const employee = contracts[employeeId];
-
-            if (!employee) {
-                updateMessage(`Login failed: Staff Number "${employeeId}" not found in system.`, true);
-                return;
-            }
-
-            // --- SURNAME VALIDATION ---
-            // If the surname from the input does NOT match the extracted surname from the employee record, reject login.
-            if (employee.surname !== inputSurname) {
-                 updateMessage(`Login failed: Staff Number and Last Name combination is incorrect.`, true);
-                return;
-            }
-            // --- END VALIDATION ---
-
-
-            // Assign the logged-in employee details
-            currentEmployee = { name: employee.name, employeeId: employeeId };
-            
-            if (employeeId === 'A9999') {
-                renderAdminView();
-            } else {
-                const timesheetData = loadTimesheet(employeeId);
-                renderTimesheetView(timesheetData);
-            }
-        }
-
-        function handleLogout() {
-            currentEmployee = null;
-            currentWeekStart = null;
-            renderLoginView();
-        }
-
-        function handleSaveEmployee() {
-            const id = document.getElementById('admin_id').value.trim().toUpperCase();
-            const name = document.getElementById('admin_name').value.trim();
-            const hours = parseFloat(document.getElementById('admin_hours').value);
-
-            if (!id || !name || isNaN(hours)) {
-                alert("Please fill in a valid ID, Name (including a surname), and Contract Hours.");
-                return;
-            }
-            
-            if (id === 'A9999') {
-                 alert("Cannot edit the Admin account details.");
-                return;
-            }
-
-            const contracts = getEmployeeContracts();
-            // Important: We save the new employee with their calculated surname
-            contracts[id] = { 
-                name: name, 
-                contractHours: hours,
-                surname: extractSurname(name) // Calculate and store surname immediately
-            };
-            saveEmployeeContracts(contracts);
-
-            alert(`Employee ${id} (${name}) saved with ${hours} contract hours. Surname for login is: ${extractSurname(name)}.`);
-            renderAdminView(); // Re-render the list and dashboard
-        }
+            // Re-attach global functions for inline HTML
+            window.showEmployeeDetails = showEmployeeDetails;
+            window.handleDeleteEmployee = handleDeleteEmployee;
+            window.handleAdminFormSubmit = handleAdminFormSubmit;
+        };
         
-        function handleDeleteEmployee(employeeId) {
-            if (employeeId === 'A9999') {
-                alert("Cannot delete the Administrator account.");
+        // --- ADMIN SUB-RENDERS & HANDLERS ---
+        
+        const renderEmployeeForm = (employee = {}) => {
+            const isEditing = !!employee.id;
+            const formHtml = `
+                <form id="adminForm" class="space-y-4">
+                    <div>
+                        <label for="adminId" class="block text-sm font-medium text-gray-700">Staff Number (ID)</label>
+                        <input type="text" id="adminId" value="${employee.id || ''}" ${isEditing ? 'readonly' : ''} placeholder="E1004" class="w-full px-3 py-2 border rounded-lg ${isEditing ? 'bg-gray-100' : 'border-gray-300'}">
+                        ${isEditing ? `<p class="text-xs text-red-500 mt-1">ID cannot be changed when editing.</p>` : ''}
+                    </div>
+                    <div>
+                        <label for="adminName" class="block text-sm font-medium text-gray-700">Full Name</label>
+                        <input type="text" id="adminName" value="${employee.fullName || ''}" placeholder="Sarah Davis" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    </div>
+                    <div>
+                        <label for="adminContract" class="block text-sm font-medium text-gray-700">Contract Hours (Minimum weekly pay)</label>
+                        <input type="number" id="adminContract" value="${employee.contractHours || 0}" min="0" step="0.5" class="w-full px-3 py-2 border border-gray-300 rounded-lg">
+                    </div>
+                    <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded-lg transition duration-150">
+                        ${isEditing ? 'Update Employee' : 'Add New Employee'}
+                    </button>
+                    ${isEditing ? `<button type="button" onclick="renderEmployeeForm({})" class="w-full mt-2 bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 rounded-lg transition duration-150">
+                        Cancel Edit / Add New
+                    </button>` : ''}
+                </form>
+            `;
+            document.getElementById('employeeForm').innerHTML = formHtml;
+            document.getElementById('adminForm').onsubmit = (e) => {
+                e.preventDefault();
+                handleAdminFormSubmit(isEditing ? employee.id : null);
+            };
+        };
+        
+        const handleAdminFormSubmit = async (employeeIdToEdit) => {
+            const id = (employeeIdToEdit || document.getElementById('adminId').value.trim()).toUpperCase();
+            const fullName = document.getElementById('adminName').value.trim();
+            const contractHours = parseFloat(document.getElementById('adminContract').value);
+
+            if (!id || !fullName || isNaN(contractHours)) {
+                alert("Please fill out all fields correctly.");
                 return;
             }
+            if (id === 'A9999' && contractHours !== 0) {
+                 if (!confirm("Warning: Changing the A9999 contract hours is unusual. Are you sure you want to proceed?")) return;
+            }
 
-            // Confirmation Dialog (as requested)
-            if (confirm(`Are you sure you want to permanently DELETE employee ${employeeId}? This action cannot be undone and will delete their contract data.`)) {
+            const employeeData = {
+                id: id,
+                fullName: fullName,
+                contractHours: contractHours,
+                isAdmin: id === 'A9999',
+            };
+
+            const success = await saveEmployeeData(employeeData);
+            if (success) {
+                renderEmployeeForm({}); // Reset form
+                fetchAndRenderUserList();
+            }
+        };
+
+        const handleDeleteEmployee = async (employeeId, employeeName) => {
+            if (employeeId === 'A9999') {
+                alert("The System Administrator (A9999) cannot be deleted.");
+                return;
+            }
+            if (confirm(`Are you sure you want to permanently delete the contract for ${employeeName} (${employeeId})? This cannot be undone.`)) {
+                const success = await deleteEmployeeData(employeeId);
+                if (success) {
+                    fetchAndRenderUserList();
+                    // Clear detail view if deleted employee was being viewed
+                    const detailContainer = document.getElementById('employeeDetailContainer');
+                    if (detailContainer && currentEmployeeDetail && currentEmployeeDetail.id === employeeId) {
+                        detailContainer.innerHTML = '';
+                        currentEmployeeDetail = null;
+                    }
+                }
+            }
+        };
+
+        const fetchAndRenderUserList = async () => {
+            if (!db) return;
+            const rosterCol = collection(db, 'admin_roster');
+            try {
+                const q = query(rosterCol);
+                const snapshot = await getDocs(q);
+                const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                const userListHtml = users.sort((a, b) => a.id.localeCompare(b.id)).map(user => {
+                    const deleteButton = user.id !== 'A9999' ? 
+                        `<button onclick="handleDeleteEmployee('${user.id}', '${user.fullName}')" class="bg-red-500 hover:bg-red-600 text-white text-xs font-semibold py-1 px-3 rounded-lg transition duration-150">Delete</button>` : 
+                        `<span class="text-gray-400 text-xs font-semibold py-1 px-3">Admin</span>`;
+
+                    const editButton = user.id !== 'A9999' ? 
+                         `<button onclick='renderEmployeeForm(${JSON.stringify(user)})' class="bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold py-1 px-3 rounded-lg transition duration-150 mr-2">Edit</button>` : '';
+
+                    return `
+                        <li class="flex justify-between items-center p-3 bg-white rounded-lg shadow-sm border border-gray-200">
+                            <span class="font-medium">${user.id} - ${user.fullName} </span>
+                            <span class="text-sm text-gray-500">Contract: ${user.contractHours.toFixed(1)} hrs</span>
+                            <div class="flex items-center">
+                                ${editButton}
+                                ${deleteButton}
+                            </div>
+                        </li>
+                    `;
+                }).join('');
+
+                document.getElementById('userList').innerHTML = `<ul class="space-y-3">${userListHtml}</ul>`;
+            } catch (error) {
+                document.getElementById('userList').innerHTML = `<p class="text-red-500">Error loading user list: ${error.message}</p>`;
+                console.error("Error fetching user list:", error);
+            }
+        };
+
+        const fetchAndRenderSummary = async () => {
+            if (!db) return;
+            const rosterCol = collection(db, 'admin_roster');
+            const timesheetCol = collection(db, 'timesheets');
+            const weekId = getWeekId();
+            const container = document.getElementById('summaryTableContainer');
+            
+            if (!container) return;
+            container.innerHTML = 'Fetching data...';
+
+            try {
+                // 1. Get all employees (Roster)
+                const rosterSnapshot = await getDocs(rosterCol);
+                const roster = rosterSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(e => !e.isAdmin);
                 
-                const contracts = getEmployeeContracts();
+                // 2. Fetch Timesheet data for the current week for all employees
+                const timesheetPromises = roster.map(employee => getTimesheetData(employee.id));
+                const timesheets = await Promise.all(timesheetPromises);
                 
-                // Check if the employee still exists before attempting deletion
-                if (!contracts[employeeId]) {
-                    alert(`Error: Employee ${employeeId} not found.`);
-                    renderAdminView(); // Re-render in case of display error
-                    return;
+                const summaryData = roster.map((employee, index) => {
+                    const timesheet = timesheets[index] || createEmptyTimesheet(employee.id, weekId);
+                    const totals = calculateAndGetTotals(timesheet, employee.contractHours);
+                    
+                    return {
+                        ...employee,
+                        hoursSubmitted: totals.hoursSubmitted,
+                        paidHours: totals.paidHours,
+                        isSubmitted: timesheet.submitted,
+                    };
+                });
+
+                const summaryRows = summaryData.map(data => `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="px-4 py-3 text-indigo-700 font-medium cursor-pointer hover:underline" onclick="showEmployeeDetails('${data.id}', '${data.fullName}')">
+                            ${data.id} - ${data.fullName}
+                        </td>
+                        <td class="px-4 py-3 text-center">${data.contractHours.toFixed(1)}</td>
+                        <td class="px-4 py-3 text-center font-bold">${data.hoursSubmitted.toFixed(2)}</td>
+                        <td class="px-4 py-3 text-center font-extrabold text-green-700">${data.paidHours.toFixed(2)}</td>
+                        <td class="px-4 py-3 text-center">
+                            <span class="px-3 py-1 text-xs font-semibold rounded-full ${data.isSubmitted ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}">
+                                ${data.isSubmitted ? 'Submitted' : 'In Progress'}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
+
+                const summaryTableHtml = `
+                    <div class="overflow-x-auto rounded-lg border">
+                        <table class="min-w-full bg-white text-sm">
+                            <thead class="bg-gray-100">
+                                <tr class="text-left text-gray-700">
+                                    <th class="px-4 py-3">Employee Name (Click for Detail)</th>
+                                    <th class="px-4 py-3 text-center">Contract (Hrs)</th>
+                                    <th class="px-4 py-3 text-center">Submitted (Hrs)</th>
+                                    <th class="px-4 py-3 text-center">Paid (Hrs)</th>
+                                    <th class="px-4 py-3 text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${summaryRows.length > 0 ? summaryRows : '<tr><td colspan="5" class="text-center py-4 text-gray-500">No staff members found in the system.</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+
+                container.innerHTML = summaryTableHtml;
+                fetchAndRenderUserList(); // Also update user list in management section
+
+            } catch (error) {
+                container.innerHTML = `<p class="text-red-500">Error loading summary: ${error.message}. Ensure Firestore is set up and running.</p>`;
+                console.error("Error fetching admin summary:", error);
+            }
+        };
+        
+        // --- GLOBAL INITIALIZATION ---
+
+        const initApp = async () => {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                     throw new Error("Firebase configuration is missing. Please insert your firebaseConfig object.");
                 }
 
-                // Delete the employee contract
-                delete contracts[employeeId];
-                saveEmployeeContracts(contracts);
-
-                // Optional cleanup: remove timesheet data for the current week
-                const today = new Date();
-                const weekStartString = formatWeekStart(getWeekStart(today));
-                localStorage.removeItem(localStorageKey(employeeId, weekStartString));
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
                 
-                alert(`Employee ${employeeId} has been successfully deleted.`);
-                renderAdminView(); // Re-render the dashboard and list
-            }
-            // If the user cancels the 'confirm' dialog, nothing happens.
-        }
+                // 1. Sign in securely (either with a provided token or anonymously)
+                if (initialAuthToken) {
+                     await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                     // For public hosting (GitHub Pages), sign in anonymously. 
+                     await signInAnonymously(auth);
+                }
 
-        function handleSubmit(data) {
-            if (!confirm(`Are you sure you want to SUBMIT the timesheet for ${data.totalSubmitted.toFixed(2)} hours? This will lock the entries.`)) {
+                currentUserId = auth.currentUser?.uid || 'anonymous';
+                isAppReady = true;
+                
+                // 2. Initial data creation check (for a fresh database)
+                const adminDoc = await getEmployeeData('A9999');
+                if (!adminDoc) {
+                    // These WRITE operations require permission to the 'admin_roster' collection
+                    await saveEmployeeData({ id: 'A9999', fullName: 'System Administrator', contractHours: 0, isAdmin: true });
+                    await saveEmployeeData({ id: 'E1001', fullName: 'Debbie Abbott', contractHours: 12.5, isAdmin: false });
+                    await saveEmployeeData({ id: 'E1002', fullName: 'Bob Smith', contractHours: 20.0, isAdmin: false });
+                    await saveEmployeeData({ id: 'E1003', fullName: 'Charlie Brown', contractHours: 0.0, isAdmin: false });
+                }
+
+            } catch (error) {
+                console.error("Critical Firebase Initialization Error:", error);
+
+                let instruction = `ERROR: System failed to connect to the cloud. Check your console for details.`;
+                if (error.code === 'permission-denied' || error.message.includes('insufficient permissions')) {
+                    instruction = `
+                        ERROR: Missing or Insufficient Permissions! You MUST update your Firestore Security Rules.
+
+                        The app is failing to read/write the initial user data. To fix this, go to the "Rules" tab in your Firebase Console and set the rules for the **admin_roster** collection to:
+
+                        match /admin_roster/{employeeId} {
+                            allow read, write: if request.auth != null;
+                        }
+
+                        This temporarily allows any authenticated user (the app's anonymous user) to initialize the data. Once the app loads successfully, you should tighten the rule again for security.
+                    `;
+                }
+
+                renderLoginView(instruction);
                 return;
             }
-            
-            // 1. Mark as submitted in the data structure
-            data.isSubmitted = true;
-            saveTimesheet(data);
 
-            // 2. Generate and trigger email
-            const contracts = getEmployeeContracts();
-            const employee = contracts[data.employeeId];
-            const recipient = 'timesheet_admin@yourcompany.com';
-            const subject = `TIMESHEET SUBMISSION: ${employee.name} - Week of ${data.weekStartString}`;
-            
-            let body = `Employee: ${employee.name} (${data.employeeId})\n`;
-            body += `Contract Hours: ${employee.contractHours} hrs\n`;
-            body += `\n--- FINAL HOURS ---\n`;
-            body += `Total Submitted: ${data.totalSubmitted.toFixed(2)} hrs\n`;
-            body += `Total PAID: ${data.totalPaid.toFixed(2)} hrs\n`;
-            body += `\n--- DAILY BREAKDOWN ---\n`;
-            
-            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-            days.forEach(day => {
-                const dayData = data.timesheet[day];
-                body += `${day}: ${dayData.amStart || ''}-${dayData.amEnd || ''} | ${dayData.pmStart || ''}-${dayData.pmEnd || ''} (${dayData.dailyTotal} hrs)\n`;
-            });
+            // Render the initial login view once everything is ready
+            renderLoginView();
+        };
 
-            // Use the safest way to trigger mailto link
-            const mailtoLink = `mailto:${recipient}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-            window.location.href = mailtoLink;
-        }
+        // Start the initialization process
+        initApp();
 
-        function handleRecall(data) {
-            if (confirm("Are you sure you want to recall this submitted timesheet? This will unlock the sheet for editing.")) {
-                data.isSubmitted = false;
-                saveTimesheet(data);
-                renderTimesheetView(data);
-            }
-        }
-
-        // --- APPLICATION START ---
-        
-        renderLoginView();
     </script>
 </body>
 </html>
